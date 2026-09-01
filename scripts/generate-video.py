@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 import argparse
-import json
 import mimetypes
 import os
 from pathlib import Path
@@ -15,6 +14,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+import json
 
 
 RATIOS = {"16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "3:2", "2:3"}
@@ -187,29 +187,58 @@ def validate_references(prompt, pattern, count, label):
             die(f"{match.group(0)} references {label} {index}, but only {count} were provided.")
 
 
+def load_video_capabilities(model):
+    registry_path = Path(__file__).resolve().parent.parent / "video-models.json"
+    try:
+        registry = json.loads(registry_path.read_text(encoding="utf-8"))
+        return registry.get("models", {}).get(model, {"duration": {"min": 4, "max": 20, "default": 10}, "aspect_ratios": sorted(RATIOS)})
+    except Exception:
+        return {"duration": {"min": 4, "max": 20, "default": 10}, "aspect_ratios": sorted(RATIOS)}
+
+
 def build_request(prompt, args, config):
-    duration = 10 if args.duration is None else args.duration
-    if not isinstance(duration, int) or duration < 10 or duration > 15:
-        die("--duration must be an integer between 10 and 15 for minimax-h3.")
-    if args.aspect_ratio and args.aspect_ratio not in RATIOS:
-        die(f"unsupported --aspect-ratio: {args.aspect_ratio}")
+    caps = load_video_capabilities(config["model"])
+    requested_duration = args.duration
+    duration = int(caps.get("duration", {}).get("default", 10) if requested_duration is None else requested_duration)
+    adjustments = []
+    resolution = None if caps.get("fixed_resolution") else (args.resolution or caps.get("default_resolution"))
+    if resolution and resolution not in caps.get("resolutions", [resolution]):
+        replacement = caps.get("default_resolution") or caps.get("resolutions", [resolution])[0]
+        adjustments.append(f"resolution {resolution} is unsupported by {config['model']}; using {replacement}")
+        resolution = replacement
+    max_duration = min(int(caps.get("duration", {}).get("max", 20)), int(caps.get("resolution_duration_max", {}).get(resolution, 20)))
+    min_duration = int(caps.get("duration", {}).get("min", 4))
+    if duration < min_duration or duration > max_duration:
+        normalized = min(max_duration, max(min_duration, duration))
+        adjustments.append(f"duration {duration}s exceeds {config['model']} range {min_duration}-{max_duration}s; using {normalized}s")
+        duration = normalized
+    aspect_ratio = args.aspect_ratio
+    ratios = caps.get("aspect_ratios", sorted(RATIOS))
+    if aspect_ratio and aspect_ratio not in ratios:
+        adjustments.append(f"aspect ratio {aspect_ratio} is unsupported by {config['model']}; using {ratios[0]}")
+        aspect_ratio = ratios[0]
+    for message in adjustments:
+        progress(args, f"Parameter adjusted: {message}.")
+    args.parameter_adjustments = adjustments
     image_count = len(args.image_inputs)
-    if image_count > 9:
-        die("minimax-h3 accepts at most 9 reference images.")
+    if image_count > caps.get("max_images", 9):
+        die(f"{config['model']} accepts at most {caps.get('max_images', 9)} reference images.")
     if len(args.video_inputs) > 3:
-        die("minimax-h3 accepts at most 3 reference videos.")
+        die(f"{config['model']} accepts at most {caps.get('max_videos', 3)} reference videos.")
     if len(args.audio_inputs) > 3:
-        die("minimax-h3 accepts at most 3 reference audios.")
+        die(f"{config['model']} accepts at most {caps.get('max_audios', 3)} reference audios.")
     if image_count + len(args.video_inputs) + len(args.audio_inputs) > 12:
-        die("reference images, videos, and audios combined must not exceed 12.")
+        die(f"reference images, videos, and audios combined must not exceed {caps.get('max_total_references', 12)}.")
     if len(prompt) > 2000:
         progress(args, "Warning: prompt exceeds 2000 Chinese characters; CUMOB may lose instructions.")
     validate_references(prompt, r"@图片([1-9])", image_count, "image")
     validate_references(prompt, r"@视频([1-3])", len(args.video_inputs), "video")
     validate_references(prompt, r"@音频([1-3])", len(args.audio_inputs), "audio")
     body = {"model": config["model"], "prompt": prompt, "duration": duration, "async": True}
-    if args.aspect_ratio:
-        body["aspect_ratio"] = args.aspect_ratio
+    if aspect_ratio:
+        body["aspect_ratio"] = aspect_ratio
+    if resolution:
+        body["resolution"] = resolution
     if args.image_url:
         body["images"] = args.image_url
     if args.video or args.video_url or args.audio or args.audio_url:
@@ -397,6 +426,7 @@ def parse_args():
     parser.add_argument("--api-key-env")
     parser.add_argument("--duration", type=int)
     parser.add_argument("--aspect-ratio")
+    parser.add_argument("--resolution")
     parser.add_argument("--image", action="append", default=[])
     parser.add_argument("--image-url", action="append", default=[])
     parser.add_argument("--video", action="append", default=[])
@@ -450,7 +480,7 @@ def main():
             if redacted:
                 redacted["multipart_files"] = {"images": args.image, "videos": args.video, "audios": args.audio}
                 redacted["input_optimization"] = args.input_optimization
-            print(json.dumps({"provider": config["provider_name"], "base_url": config["base_url"], "create_endpoint": config["create_url"], "status_endpoint": f"{config['status_url']}/{{id}}", "video_model": config["model"], "transport": "multipart/form-data" if (args.image or args.video or args.audio) else "application/json", "has_api_key": config["has_api_key"], "api_key_source": config["api_key_source"], "request": redacted, "resume_id": resume_id, "task_file": str(state_file), "output": args.out}, ensure_ascii=False, indent=2))
+            print(json.dumps({"provider": config["provider_name"], "base_url": config["base_url"], "create_endpoint": config["create_url"], "status_endpoint": f"{config['status_url']}/{{id}}", "video_model": config["model"], "transport": "multipart/form-data" if (args.image or args.video or args.audio) else "application/json", "has_api_key": config["has_api_key"], "api_key_source": config["api_key_source"], "request": redacted, "parameter_adjustments": getattr(args, "parameter_adjustments", []), "resume_id": resume_id, "task_file": str(state_file), "output": args.out}, ensure_ascii=False, indent=2))
             return
         if resume_id:
             progress(args, f"Resuming existing video task {resume_id}; no create request will be sent.")
@@ -474,7 +504,7 @@ def main():
         completed = task if str(task.get("status", "")).lower() == "succeeded" and video_url_of(task) else wait_for_video(task_id, args, config, task, state_file)
         progress(args, "Video is ready. Downloading content.")
         written = download_video(completed["video_url"], args.out, config)
-        summary = {"id": task_id, "status": completed.get("status"), "provider": config["provider_name"], "model": completed.get("model", config["model"]), "duration": completed.get("duration", body.get("duration") if body else None), "aspect_ratio": completed.get("aspect_ratio", body.get("aspect_ratio") if body else None), "resolution": completed.get("resolution", "768p"), "video_url": completed["video_url"], "output": written}
+        summary = {"id": task_id, "status": completed.get("status"), "provider": config["provider_name"], "model": completed.get("model", config["model"]), "requested_duration": args.duration, "duration": completed.get("duration", body.get("duration") if body else None), "aspect_ratio": completed.get("aspect_ratio", body.get("aspect_ratio") if body else None), "resolution": completed.get("resolution", body.get("resolution") if body else "768p"), "parameter_adjustments": getattr(args, "parameter_adjustments", []), "video_url": completed["video_url"], "output": written}
         print(json.dumps(summary, ensure_ascii=False, indent=2) if args.json else f"Wrote {written}")
     finally:
         if temp_dir is not None:

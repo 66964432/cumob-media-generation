@@ -24,6 +24,7 @@
 - 默认在上传前将超过 4MB 的参考图压缩为最长边 1536px 的临时副本。
 - 自动保护透明 PNG，且不会修改原图或蒙版文件。
 - 图片和视频默认使用 `async=true`，支持状态轮询、指数退避、断点恢复；视频完成后下载 MP4，图片完成后保存 URL/Base64 结果。
+- 视频模型参数按 `video-models.json` 的能力矩阵自动处理；例如 `agnes-video-v2.0-ref` 在 480p/720p 下支持 3-18 秒，在 1080p 下支持 3-10 秒，`minimax-h3-ref` 支持 10-15 秒且固定 768p。超出范围时自动归一化并提示，不重复要求确认。
 - 视频接口在没有本地参考媒体时优先使用 JSON；包含本地图片、视频或音频时自动使用 multipart 上传。
 
 ## 项目结构
@@ -114,7 +115,7 @@ base_url = "https://api.cumob.com/v1"
 image_api = "images"
 image_model = "gpt-image-2-ref"
 video_api = "videos"
-video_model = "minimax-h3"
+video_model = "minimax-h3-ref"
 ```
 
 脚本会调用：
@@ -291,7 +292,7 @@ node scripts/generate-video.mjs \
   --out outputs/cat.mp4
 ```
 
-`minimax-h3` 的 `duration` 支持 10-15 秒，分辨率固定为 768p；参考图片最多 9 张，参考视频最多 3 段，参考音频最多 3 段，三类素材合计最多 12 个。没有本地参考媒体时优先使用 JSON；存在本地参考图片、视频或音频时自动切换为 multipart。视频和音频 URL 或本地文件最终分别写入 `metadata.videos`、`metadata.audios`，并在提示词中使用 `@视频1`、`@音频1` 引用。
+视频模型能力保存在 `video-models.json`。脚本会先确定模型，再根据分辨率确定合法时长；超出范围时自动选择最近合法值并在进度和结果摘要中记录调整。没有本地参考媒体时优先使用 JSON；存在本地参考图片、视频或音频时自动切换为 multipart。视频和音频 URL 或本地文件最终分别写入 `metadata.videos`、`metadata.audios`，并在提示词中使用 `@视频1`、`@音频1` 引用。
 
 本地视频和音频示例：
 

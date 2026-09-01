@@ -1,0 +1,18 @@
+{
+  "default_model": "minimax-h3-ref",
+  "models": {
+    "minimax-h3-ref": {
+      "duration": { "min": 10, "max": 15, "default": 10 },
+      "fixed_resolution": "768p",
+      "resolutions": ["768p"],
+      "aspect_ratios": ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "3:2", "2:3"]
+    },
+    "agnes-video-v2.0-ref": {
+      "duration": { "min": 3, "max": 18, "default": 10 },
+      "resolutions": ["480p", "720p", "1080p"],
+      "default_resolution": "720p",
+      "resolution_duration_max": { "480p": 18, "720p": 18, "1080p": 10 },
+      "aspect_ratios": ["16:9", "9:16", "1:1", "4:3", "3:4"]
+    }
+  }
+}

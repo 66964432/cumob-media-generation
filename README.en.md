@@ -35,6 +35,12 @@ Current version: `0.4.0`
   maximum dimension of 1536 pixels.
 - Uses `async=true` by default for CUMOB image and video tasks, with status
   polling, exponential backoff, and resume support.
+- Loads video model capabilities from `video-models.json`; duration limits are
+  resolved by model and resolution automatically. For example,
+  `agnes-video-v2.0-ref` supports 3-18 seconds at 480p/720p and 3-10 seconds
+  at 1080p, while `minimax-h3-ref` supports 10-15 seconds at fixed 768p.
+  Unsupported combinations are normalized to the nearest valid value with a
+  non-blocking notice instead of repeated confirmation.
 - Preserves transparent PNG inputs and never modifies originals or mask files.
 - Supports synchronous/asynchronous video responses, polling, resume, and MP4
   downloads.
@@ -131,7 +137,7 @@ base_url = "https://api.cumob.com/v1"
 image_api = "images"
 image_model = "gpt-image-2-ref"
 video_api = "videos"
-video_model = "minimax-h3"
+video_model = "minimax-h3-ref"
 ```
 
 The scripts call:

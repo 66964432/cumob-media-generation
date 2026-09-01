@@ -25,8 +25,9 @@ Codex/CUMOB config:
   --api-key-env <name>        Environment fallback for the API key.
 
 Video options (minimax-h3):
-  --duration <10-15>          Integer seconds. Defaults to 10.
-  --aspect-ratio <ratio>      16:9, 9:16, 1:1, 4:3, 3:4, 21:9, 3:2, or 2:3.
+  --duration <seconds>        Integer seconds (normalized to the selected model's capabilities).
+  --aspect-ratio <ratio>      Requested output aspect ratio.
+  --resolution <value>        Requested resolution when supported by the model.
   --image <path>              Local reference image; can be repeated (max 9).
   --image-url <url>           Public reference image URL; can be repeated (max 9).
   --video <path>              Local reference video; can be repeated (max 3).
@@ -179,6 +180,55 @@ function resolveConfig(args) {
   };
 }
 
+const FALLBACK_VIDEO_CAPABILITIES = {
+  duration: { min: 4, max: 20, default: 10 },
+  aspect_ratios: [...RATIOS],
+};
+
+function loadVideoCapabilities(model) {
+  const file = path.resolve(path.dirname(process.argv[1]), "../video-models.json");
+  try {
+    const registry = JSON.parse(fs.readFileSync(file, "utf8"));
+    return registry.models?.[model] || FALLBACK_VIDEO_CAPABILITIES;
+  } catch {
+    return FALLBACK_VIDEO_CAPABILITIES;
+  }
+}
+
+function normalizeVideoParameters(args, config) {
+  const capabilities = loadVideoCapabilities(config.model);
+  const requestedDuration = args.duration === undefined ? null : Number(args.duration);
+  let duration = requestedDuration === null ? Number(capabilities.duration?.default ?? 10) : requestedDuration;
+  const adjustments = [];
+  const minDuration = Number(capabilities.duration?.min ?? 4);
+  let maxDuration = Number(capabilities.duration?.max ?? 20);
+  let resolution = args.resolution;
+  if (capabilities.fixed_resolution) resolution = undefined;
+  else if (!resolution && capabilities.default_resolution) resolution = capabilities.default_resolution;
+  if (resolution && Array.isArray(capabilities.resolutions) && !capabilities.resolutions.includes(resolution)) {
+    const fallback = capabilities.default_resolution || capabilities.resolutions[0];
+    adjustments.push(`resolution ${resolution} is unsupported by ${config.model}; using ${fallback}`);
+    resolution = fallback;
+  }
+  if (resolution && capabilities.resolution_duration_max?.[resolution] !== undefined) {
+    maxDuration = Math.min(maxDuration, Number(capabilities.resolution_duration_max[resolution]));
+  }
+  if (!Number.isInteger(duration) || duration < minDuration || duration > maxDuration) {
+    const normalized = Math.min(maxDuration, Math.max(minDuration, Number.isFinite(duration) ? Math.round(duration) : minDuration));
+    adjustments.push(`duration ${args.duration ?? "default"} is outside ${config.model}${resolution ? ` ${resolution}` : ""} range ${minDuration}-${maxDuration}s; using ${normalized}s`);
+    duration = normalized;
+  }
+  const ratios = Array.isArray(capabilities.aspect_ratios) && capabilities.aspect_ratios.length ? capabilities.aspect_ratios : [...RATIOS];
+  let aspectRatio = args["aspect-ratio"];
+  if (aspectRatio && !ratios.includes(aspectRatio)) {
+    adjustments.push(`aspect ratio ${aspectRatio} is unsupported by ${config.model}; using ${ratios[0]}`);
+    aspectRatio = ratios[0];
+  }
+  if (adjustments.length) adjustments.forEach((message) => progress(args, `Parameter adjusted: ${message}.`));
+  args.parameterAdjustments = adjustments;
+  return { capabilities, duration, aspectRatio, resolution };
+}
+
 async function readPrompt(args) {
   if (args.prompt) return args.prompt;
   if (args["prompt-file"]) return fs.readFileSync(args["prompt-file"], "utf8").trim();
@@ -264,22 +314,23 @@ function validateReferences(prompt, pattern, count, label) {
 }
 
 function buildRequest(prompt, args, config) {
-  const duration = args.duration === undefined ? 10 : Number(args.duration);
-  if (!Number.isInteger(duration) || duration < 10 || duration > 15) die("--duration must be an integer between 10 and 15 for minimax-h3.");
-  if (args["aspect-ratio"] !== undefined && !RATIOS.has(args["aspect-ratio"])) die(`unsupported --aspect-ratio: ${args["aspect-ratio"]}`);
-  if (args.imageInputs.length > 9) die("minimax-h3 accepts at most 9 reference images.");
-  if (args.video.length + args["video-url"].length > 3) die("minimax-h3 accepts at most 3 reference videos.");
-  if (args.audio.length + args["audio-url"].length > 3) die("minimax-h3 accepts at most 3 reference audios.");
+  const normalized = normalizeVideoParameters(args, config);
+  const { duration, aspectRatio, resolution } = normalized;
+  const caps = normalized.capabilities;
+  if (args.imageInputs.length > Number(caps.max_images ?? 9)) die(`${config.model} accepts at most ${caps.max_images ?? 9} reference images.`);
+  if (args.video.length + args["video-url"].length > Number(caps.max_videos ?? 3)) die(`${config.model} accepts at most ${caps.max_videos ?? 3} reference videos.`);
+  if (args.audio.length + args["audio-url"].length > Number(caps.max_audios ?? 3)) die(`${config.model} accepts at most ${caps.max_audios ?? 3} reference audios.`);
   const imageCount = args.imageInputs.length;
   const total = imageCount + args.video.length + args["video-url"].length + args.audio.length + args["audio-url"].length;
-  if (total > 12) die("reference images, videos, and audios combined must not exceed 12.");
+  if (total > Number(caps.max_total_references ?? 12)) die(`reference images, videos, and audios combined must not exceed ${caps.max_total_references ?? 12}.`);
   if ([...prompt].length > 2000) progress(args, "Warning: prompt exceeds 2000 Chinese characters; CUMOB may lose instructions.");
   validateReferences(prompt, /@图片([1-9])/g, imageCount, "image");
   validateReferences(prompt, /@视频([1-3])/g, args.video.length + args["video-url"].length, "video");
   validateReferences(prompt, /@音频([1-3])/g, args.audio.length + args["audio-url"].length, "audio");
 
   const body = { model: config.model, prompt, duration, async: true };
-  if (args["aspect-ratio"] !== undefined) body.aspect_ratio = args["aspect-ratio"];
+  if (aspectRatio) body.aspect_ratio = aspectRatio;
+  if (resolution) body.resolution = resolution;
   const images = args["image-url"];
   if (images.length) body.images = images;
   if (args.video.length + args["video-url"].length || args.audio.length + args["audio-url"].length) {
@@ -428,6 +479,7 @@ async function main() {
       transport: hasLocalMedia(args) ? "multipart/form-data" : "application/json",
       has_api_key: config.hasApiKey, api_key_source: config.apiKeySource,
       request: body ? { ...body, images: body.images, multipart_files: { images: args.image, videos: args.video, audios: args.audio }, input_optimization: args.inputOptimization } : null,
+      parameter_adjustments: args.parameterAdjustments || [],
       resume_id: resumeId || null, task_file: stateFile, output: outputPath,
     }, null, 2));
     return;
@@ -455,7 +507,7 @@ async function main() {
   const completed = videoUrlOf(task) && statusOf(task) === "succeeded" ? { ...task, video_url: videoUrlOf(task) } : await waitForVideo(id, args, config, task);
   progress(args, "Video is ready. Downloading content.");
   const written = await downloadVideo(completed.video_url, outputPath, config);
-  const summary = { id, status: completed.status, provider: config.providerName, model: completed.model || config.model, duration: completed.duration || body?.duration, aspect_ratio: completed.aspect_ratio || body?.aspect_ratio, resolution: completed.resolution || "768p", video_url: completed.video_url, output: written };
+  const summary = { id, status: completed.status, provider: config.providerName, model: completed.model || config.model, requested_duration: args.duration === undefined ? null : Number(args.duration), duration: completed.duration || body?.duration, aspect_ratio: completed.aspect_ratio || body?.aspect_ratio, resolution: completed.resolution || body?.resolution || "768p", parameter_adjustments: args.parameterAdjustments || [], video_url: completed.video_url, output: written };
   if (args.json) console.log(JSON.stringify(summary, null, 2)); else console.log(`Wrote ${written}`);
   } finally {
     cleanupImages();
