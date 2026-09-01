@@ -1,21 +1,23 @@
-# CUMOB Image Generation for Codex
+# CUMOB Media Generation for Codex
 
 [中文](README.md) | **English**
 
-An image-generation Skill for Codex that uses the active Codex provider to call
-an OpenAI-compatible Images API or Responses API. It supports image generation,
-editing, inpainting, and restyling.
+A media-generation Skill for Codex that uses the active Codex provider to call
+CUMOB-compatible image and video APIs. It supports image generation, editing,
+inpainting, restyling, and `minimax-h3` video generation.
 
 The project includes dependency-free Node.js and Python scripts. They read
 Codex's `config.toml` and `auth.json` directly, so API keys do not need to be
 placed on the command line.
 
-Current version: `0.2.0`
+Current version: `0.4.0`
 
 ## Features
 
 - Automatically selects the Images API or Responses API from the provider's
   `image_api` setting.
+- Automatically routes image requests to the image script and video requests to
+  the CUMOB Videos API script.
 - Supports generation, editing, multiple input images, and mask-based
   inpainting.
 - Supports size, quality, transparent backgrounds, output formats, and input
@@ -31,12 +33,18 @@ Current version: `0.2.0`
   exposing API keys or image contents.
 - Compresses reference images larger than 4 MB into temporary uploads with a
   maximum dimension of 1536 pixels.
+- Uses `async=true` by default for CUMOB image and video tasks, with status
+  polling, exponential backoff, and resume support.
 - Preserves transparent PNG inputs and never modifies originals or mask files.
+- Supports synchronous/asynchronous video responses, polling, resume, and MP4
+  downloads.
+- Uses JSON when all references are URLs, and switches to multipart upload when
+  local image, video, or audio references are present.
 
 ## Repository Layout
 
 ```text
-cumob-image-generation4codex/
+cumob-media-generation4codex/
 ├── SKILL.md
 ├── README.md
 ├── README.en.md
@@ -46,11 +54,13 @@ cumob-image-generation4codex/
 │   └── evals.json
 └── scripts/
     ├── generate-image.mjs
-    └── generate-image.py
+    ├── generate-image.py
+    ├── generate-video.mjs
+    └── generate-video.py
 ```
 
-`SKILL.md` contains the instructions loaded by Codex. The two scripts under
-`scripts/` expose substantially the same command-line interface.
+`SKILL.md` contains the instructions loaded by Codex. The scripts under
+`scripts/` provide Node.js and Python implementations for both media types.
 
 ## Requirements
 
@@ -69,8 +79,8 @@ macOS or Linux:
 
 ```bash
 mkdir -p "${CODEX_HOME:-$HOME/.codex}/skills"
-git clone https://github.com/66964432/cumob-image-generation4codex.git \
-  "${CODEX_HOME:-$HOME/.codex}/skills/cumob-image-generation4codex"
+git clone https://github.com/66964432/cumob-media-generation4codex.git \
+  "${CODEX_HOME:-$HOME/.codex}/skills/cumob-media-generation4codex"
 ```
 
 Windows PowerShell:
@@ -78,7 +88,7 @@ Windows PowerShell:
 ```powershell
 $codexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME ".codex" }
 New-Item -ItemType Directory -Force (Join-Path $codexHome "skills") | Out-Null
-git clone https://github.com/66964432/cumob-image-generation4codex.git (Join-Path $codexHome "skills\cumob-image-generation4codex")
+git clone https://github.com/66964432/cumob-media-generation4codex.git (Join-Path $codexHome "skills\cumob-media-generation4codex")
 ```
 
 Restart Codex or start a new Codex task after installation so the Skill list is
@@ -91,8 +101,8 @@ project's `.codex/skills` directory:
 
 ```bash
 mkdir -p .codex/skills
-git clone https://github.com/66964432/cumob-image-generation4codex.git \
-  .codex/skills/cumob-image-generation4codex
+git clone https://github.com/66964432/cumob-media-generation4codex.git \
+  .codex/skills/cumob-media-generation4codex
 ```
 
 Project-local Skill availability depends on the current Codex version and
@@ -117,15 +127,19 @@ model = "your-response-model"
 
 [model_providers.cumob]
 name = "CUMOB"
-base_url = "http://api.cumob.com/v1"
+base_url = "https://api.cumob.com/v1"
 image_api = "images"
 image_model = "gpt-image-2-ref"
+video_api = "videos"
+video_model = "minimax-h3"
 ```
 
 The scripts call:
 
 - `<base_url>/images/generations`
 - `<base_url>/images/edits`
+- `<base_url>/videos`
+- `<base_url>/status/{id}`
 
 ### Responses API
 
@@ -153,6 +167,7 @@ export OPENAI_BASE_URL="https://example.com/v1"
 export OPENAI_MODEL="your-response-model"
 export OPENAI_IMAGE_MODEL="gpt-image-1"
 export OPENAI_IMAGE_API="responses"
+export OPENAI_VIDEO_MODEL="minimax-h3"
 export OPENAI_API_KEY="<your-api-key>"
 ```
 
@@ -169,6 +184,12 @@ Generate a 1024x1024 product photo of a black ceramic mug and save it to outputs
 
 Codex uses `SKILL.md` to select and run the appropriate script. The CLI can also
 be invoked directly.
+
+For a video request, Codex automatically invokes the video script, for example:
+
+```text
+Generate a 10-second 16:9 video and save it to outputs/demo.mp4.
+```
 
 ### Automatic Reference-image Compression
 
@@ -279,6 +300,24 @@ Display all CLI options:
 node scripts/generate-image.mjs --help
 ```
 
+Video example:
+
+```bash
+node scripts/generate-video.mjs \
+  --prompt "A cat chasing the ball in @图片1" \
+  --image reference.png \
+  --duration 10 \
+  --aspect-ratio 16:9 \
+  --out outputs/cat.mp4
+```
+
+For `minimax-h3`, `duration` is an integer from 10 through 15 and resolution is
+fixed at 768p. It accepts up to 9 images, 3 videos, and 3 audios, with a combined
+limit of 12 references. The script uses JSON for URL-only references and
+multipart for local media, placing video/audio references in `metadata.videos`
+and `metadata.audios`. Local video and audio files can be passed with `--video`
+and `--audio`; URL references use `--video-url` and `--audio-url`.
+
 ## Troubleshooting
 
 ### Codex Does Not Discover the Skill
@@ -286,7 +325,7 @@ node scripts/generate-image.mjs --help
 Confirm that `SKILL.md` exists directly under the installed Skill directory:
 
 ```text
-~/.codex/skills/cumob-image-generation4codex/SKILL.md
+~/.codex/skills/cumob-media-generation4codex/SKILL.md
 ```
 
 Then restart Codex or start a new task.
@@ -306,6 +345,23 @@ Image generation can take several minutes. A
 `Still waiting for image result` message means the original command is still
 waiting normally. Do not start a duplicate request while it is running.
 
+If an image or video process is interrupted, resume polling with the task ID printed by
+the API:
+
+```bash
+node scripts/generate-video.mjs \
+  --resume task_xxx \
+  --out outputs/resumed.mp4
+```
+
+The video status endpoint is `<base_url>/status/{id}`. Once the task succeeds,
+the script downloads `data[].video_url`.
+
+The script stores the task ID and latest status next to the output as
+`<output>.task.json`. Temporary polling disconnects are retried with backoff,
+and the task is never recreated. Images API requests include `async=true` and
+support the same `--resume` flow.
+
 ### Incorrect Backend Path
 
 Run `--dry-run` and inspect:
@@ -322,8 +378,11 @@ Syntax checks:
 
 ```bash
 node --check scripts/generate-image.mjs
+node --check scripts/generate-video.mjs
 PYTHONPYCACHEPREFIX=/tmp/cumob-image-pycache \
   python3 -m py_compile scripts/generate-image.py
+PYTHONPYCACHEPREFIX=/tmp/cumob-video-pycache \
+  python3 -m py_compile scripts/generate-video.py
 ```
 
 Inspect an Images API request offline:
@@ -358,7 +417,7 @@ The project follows semantic versioning:
 - `PATCH`: backward-compatible fixes and documentation changes.
 
 The current version is stored in the root `VERSION` file. Git tags use a `v`
-prefix, for example `v0.2.0`.
+prefix, for example `v0.3.1`.
 
 ## Publishing to GitHub
 
@@ -374,7 +433,7 @@ git branch -M main
 Create and push a public repository with GitHub CLI:
 
 ```bash
-gh repo create cumob-image-generation4codex \
+gh repo create cumob-media-generation4codex \
   --public \
   --source=. \
   --remote=origin \
@@ -384,7 +443,7 @@ gh repo create cumob-image-generation4codex \
 Or add this repository as the remote:
 
 ```bash
-git remote add origin git@github.com:66964432/cumob-image-generation4codex.git
+git remote add origin git@github.com:66964432/cumob-media-generation4codex.git
 git push -u origin main
 ```
 

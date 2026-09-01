@@ -1,18 +1,19 @@
-# CUMOB Image Generation for Codex
+# CUMOB Media Generation for Codex
 
 **中文** | [English](README.en.md)
 
-一个面向 Codex 的图片生成 Skill，通过当前 Codex provider 调用 OpenAI
-兼容的 Images API 或 Responses API，支持图片生成、编辑、局部重绘和风格转换。
+一个面向 Codex 的图片和视频生成 Skill。它通过当前 Codex provider 调用 CUMOB
+兼容接口，支持图片生成、编辑、局部重绘、风格转换，以及 `minimax-h3` 视频生成。
 
 项目内置 Node.js 和 Python 两套零第三方依赖脚本，可直接读取 Codex 的
 `config.toml` 与 `auth.json`，无需把 API Key 写进命令行。
 
-当前版本：`0.2.0`
+当前版本：`0.4.0`
 
 ## 功能
 
 - 根据 provider 的 `image_api` 自动选择 Images API 或 Responses API。
+- 根据用户请求自动在图片脚本和 CUMOB Videos API 脚本之间路由。
 - 支持生成、编辑、多图片输入和蒙版局部重绘。
 - 支持尺寸、质量、透明背景、输出格式和输入保真度等参数。
 - 优先使用 Codex 已配置的 provider、模型与认证信息。
@@ -22,11 +23,13 @@
 - 提供 `--dry-run` 检查配置和请求结构，不会显示 API Key 或图片内容。
 - 默认在上传前将超过 4MB 的参考图压缩为最长边 1536px 的临时副本。
 - 自动保护透明 PNG，且不会修改原图或蒙版文件。
+- 图片和视频默认使用 `async=true`，支持状态轮询、指数退避、断点恢复；视频完成后下载 MP4，图片完成后保存 URL/Base64 结果。
+- 视频接口在没有本地参考媒体时优先使用 JSON；包含本地图片、视频或音频时自动使用 multipart 上传。
 
 ## 项目结构
 
 ```text
-cumob-image-generation4codex/
+cumob-media-generation4codex/
 ├── SKILL.md
 ├── README.md
 ├── README.en.md
@@ -36,11 +39,13 @@ cumob-image-generation4codex/
 │   └── evals.json
 └── scripts/
     ├── generate-image.mjs
-    └── generate-image.py
+    ├── generate-image.py
+    ├── generate-video.mjs
+    └── generate-video.py
 ```
 
-`SKILL.md` 是 Codex 加载的核心 Skill 指令。`scripts/` 中的两个实现提供基本
-相同的命令行接口。
+`SKILL.md` 是 Codex 加载的核心 Skill 指令。`scripts/` 中分别提供 Node.js 和
+Python 的图片、视频实现。
 
 ## 环境要求
 
@@ -59,8 +64,8 @@ macOS 或 Linux：
 
 ```bash
 mkdir -p "${CODEX_HOME:-$HOME/.codex}/skills"
-git clone https://github.com/66964432/cumob-image-generation4codex.git \
-  "${CODEX_HOME:-$HOME/.codex}/skills/cumob-image-generation4codex"
+git clone https://github.com/66964432/cumob-media-generation4codex.git \
+  "${CODEX_HOME:-$HOME/.codex}/skills/cumob-media-generation4codex"
 ```
 
 Windows PowerShell：
@@ -68,7 +73,7 @@ Windows PowerShell：
 ```powershell
 $codexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME ".codex" }
 New-Item -ItemType Directory -Force (Join-Path $codexHome "skills") | Out-Null
-git clone https://github.com/66964432/cumob-image-generation4codex.git (Join-Path $codexHome "skills\cumob-image-generation4codex")
+git clone https://github.com/66964432/cumob-media-generation4codex.git (Join-Path $codexHome "skills\cumob-media-generation4codex")
 ```
 
 安装后重新启动 Codex，或新建一个 Codex 任务，使 Skill 列表重新加载。
@@ -80,8 +85,8 @@ git clone https://github.com/66964432/cumob-image-generation4codex.git (Join-Pat
 
 ```bash
 mkdir -p .codex/skills
-git clone https://github.com/66964432/cumob-image-generation4codex.git \
-  .codex/skills/cumob-image-generation4codex
+git clone https://github.com/66964432/cumob-media-generation4codex.git \
+  .codex/skills/cumob-media-generation4codex
 ```
 
 项目级安装是否可用取决于当前 Codex 版本和工作区策略。如果 Codex 没有发现
@@ -105,15 +110,19 @@ model = "your-response-model"
 
 [model_providers.cumob]
 name = "CUMOB"
-base_url = "http://api.cumob.com/v1"
+base_url = "https://api.cumob.com/v1"
 image_api = "images"
 image_model = "gpt-image-2-ref"
+video_api = "videos"
+video_model = "minimax-h3"
 ```
 
 脚本会调用：
 
 - `<base_url>/images/generations`
 - `<base_url>/images/edits`
+- `<base_url>/videos`
+- `<base_url>/status/{id}`
 
 ### Responses API
 
@@ -141,6 +150,7 @@ export OPENAI_BASE_URL="https://example.com/v1"
 export OPENAI_MODEL="your-response-model"
 export OPENAI_IMAGE_MODEL="gpt-image-1"
 export OPENAI_IMAGE_API="responses"
+export OPENAI_VIDEO_MODEL="minimax-h3"
 export OPENAI_API_KEY="<your-api-key>"
 ```
 
@@ -155,6 +165,12 @@ export OPENAI_API_KEY="<your-api-key>"
 ```
 
 Codex 会根据 `SKILL.md` 调用对应脚本。也可以直接运行 CLI。
+
+提出视频请求时，Codex 会自动调用视频脚本。例如：
+
+```text
+生成一段 10 秒、16:9 的视频，保存到 outputs/demo.mp4。
+```
 
 ### 自动压缩参考图片
 
@@ -264,6 +280,30 @@ node scripts/generate-image.mjs \
 node scripts/generate-image.mjs --help
 ```
 
+视频示例：
+
+```bash
+node scripts/generate-video.mjs \
+  --prompt "一只猫在阳光下追逐@图片1中的毛线球" \
+  --image reference.png \
+  --duration 10 \
+  --aspect-ratio 16:9 \
+  --out outputs/cat.mp4
+```
+
+`minimax-h3` 的 `duration` 支持 10-15 秒，分辨率固定为 768p；参考图片最多 9 张，参考视频最多 3 段，参考音频最多 3 段，三类素材合计最多 12 个。没有本地参考媒体时优先使用 JSON；存在本地参考图片、视频或音频时自动切换为 multipart。视频和音频 URL 或本地文件最终分别写入 `metadata.videos`、`metadata.audios`，并在提示词中使用 `@视频1`、`@音频1` 引用。
+
+本地视频和音频示例：
+
+```bash
+node scripts/generate-video.mjs \
+  --prompt "保持@图片1的人物外观，参考@视频1的动作并使用@音频1的声音" \
+  --image reference.png \
+  --video motion.mp4 \
+  --audio sound.mp3 \
+  --out outputs/remix.mp4
+```
+
 ## 常见问题
 
 ### Codex 没有发现 Skill
@@ -271,7 +311,7 @@ node scripts/generate-image.mjs --help
 确认目录结构中直接包含 `SKILL.md`：
 
 ```text
-~/.codex/skills/cumob-image-generation4codex/SKILL.md
+~/.codex/skills/cumob-media-generation4codex/SKILL.md
 ```
 
 然后重新启动 Codex 或新建一个任务。
@@ -287,6 +327,26 @@ node scripts/generate-image.mjs --help
 
 图片生成可能需要数分钟。出现 `Still waiting for image result` 表示原命令仍在
 正常等待。不要因为暂时没有结果而重复启动相同请求。
+
+图片或视频任务如果进程中断，可以使用输出中的任务 ID 恢复轮询：
+
+```bash
+node scripts/generate-video.mjs \
+  --resume task_xxx \
+  --out outputs/resumed.mp4
+```
+
+图片任务也可以恢复，且不会重新创建任务：
+
+```bash
+node scripts/generate-image.mjs \
+  --resume task_xxx \
+  --out outputs/resumed.png
+```
+
+视频状态接口为 `<base_url>/status/{id}`，视频完成后脚本会下载响应中的 `data[].video_url`。
+
+脚本会在输出文件旁保存 `<output>.task.json`，记录任务 ID 和最新状态。轮询期间如果遇到临时网络断开、408/425/429 或 5xx，脚本会使用指数退避重试，不会重新创建任务。
 
 ### 后端路径不正确
 
@@ -304,8 +364,11 @@ node scripts/generate-image.mjs --help
 
 ```bash
 node --check scripts/generate-image.mjs
+node --check scripts/generate-video.mjs
 PYTHONPYCACHEPREFIX=/tmp/cumob-image-pycache \
   python3 -m py_compile scripts/generate-image.py
+PYTHONPYCACHEPREFIX=/tmp/cumob-video-pycache \
+  python3 -m py_compile scripts/generate-video.py
 ```
 
 离线检查 Images API 请求：
@@ -340,7 +403,7 @@ node scripts/generate-image.mjs \
 - `PATCH`：向后兼容的错误修复和文档修正。
 
 当前版本保存在仓库根目录的 `VERSION` 文件中。Git tag 使用 `v` 前缀，例如
-`v0.2.0`。
+`v0.3.1`。
 
 ## 发布到 GitHub
 
@@ -356,7 +419,7 @@ git branch -M main
 使用 GitHub CLI 创建公开仓库并推送：
 
 ```bash
-gh repo create cumob-image-generation4codex \
+gh repo create cumob-media-generation4codex \
   --public \
   --source=. \
   --remote=origin \
@@ -366,7 +429,7 @@ gh repo create cumob-image-generation4codex \
 或者先在 GitHub 创建空仓库，再手动添加远端：
 
 ```bash
-git remote add origin git@github.com:66964432/cumob-image-generation4codex.git
+git remote add origin git@github.com:66964432/cumob-media-generation4codex.git
 git push -u origin main
 ```
 

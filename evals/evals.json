@@ -1,5 +1,5 @@
 {
-  "skill_name": "cumob-image-generation4codex",
+  "skill_name": "cumob-media-generation4codex",
   "evals": [
     {
       "id": 1,
@@ -20,6 +20,44 @@
       "files": [
         "reference.png"
       ]
+    },
+    {
+      "id": 4,
+      "prompt": "生成一段 10 秒、16:9 的 minimax-h3 视频，保存到 outputs/demo.mp4。",
+      "expected_output": "The agent routes the request to generate-video, sends one POST to /v1/videos with model minimax-h3, duration 10, and aspect_ratio 16:9, then polls /v1/status/{id} and saves the returned video_url as an MP4.",
+      "files": []
+    },
+    {
+      "id": 5,
+      "prompt": "使用 reference.png 作为@图片1，生成 12 秒竖屏视频并保存到 outputs/reference-video.mp4。",
+      "expected_output": "The agent routes to the video script, sends the image as a CUMOB-compatible images value, preserves the @图片1 reference, validates duration 12 and aspect_ratio 9:16, and writes the downloaded video.",
+      "files": [
+        "reference.png"
+      ]
+    },
+    {
+      "id": 6,
+      "prompt": "检查 minimax-h3 视频请求配置，不实际调用接口。",
+      "expected_output": "The agent uses generate-video --dry-run and reports the redacted create/status endpoints, video model, duration/aspect ratio, and reference counts without exposing credentials or base64 contents.",
+      "files": []
+    },
+    {
+      "id": 7,
+      "prompt": "视频任务轮询时第一次状态请求网络中断，但任务之后会成功。不要重复创建任务，继续轮询并保存最终 MP4。",
+      "expected_output": "The agent treats the transient polling network failure as recoverable, sends only one POST create request, continues polling the same task id, writes a task state file, and downloads the completed MP4.",
+      "files": []
+    },
+    {
+      "id": 8,
+      "prompt": "生成一张图片，要求使用 CUMOB Images API 的异步模式，并在任务完成后保存结果。",
+      "expected_output": "The agent sends exactly one Images API create request with async=true, persists the returned task id, polls /v1/status/{id} with exponential backoff, and saves data[].url or data[].b64_json without creating a duplicate task.",
+      "files": []
+    },
+    {
+      "id": 9,
+      "prompt": "图片任务创建后本地进程中断，请使用已有任务 ID 恢复，不要重新创建任务。",
+      "expected_output": "The agent uses generate-image --resume, sends no second POST, polls the existing task, and writes the completed image.",
+      "files": []
     }
   ]
 }

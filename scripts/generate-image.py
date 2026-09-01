@@ -14,6 +14,7 @@ import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 
@@ -80,6 +81,10 @@ def parse_args():
     parser.add_argument("--input-jpeg-quality", type=int, default=85)
     parser.add_argument("--input-optimize-threshold-mb", type=float, default=4)
     parser.add_argument("--no-input-optimization", action="store_true")
+    parser.add_argument("--poll-interval", type=float, default=5)
+    parser.add_argument("--timeout", type=float, default=1800)
+    parser.add_argument("--resume")
+    parser.add_argument("--task-file")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--no-progress", action="store_true")
@@ -491,6 +496,26 @@ def parse_response_json(status, response_bytes):
         die(f"API returned non-JSON response with status {status}: {text[:500]}")
 
 
+def task_state_path(args):
+    return Path(args.task_file or f"{args.out}.task.json").resolve()
+
+
+def write_task_state(file_path, state):
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = file_path.with_name(f"{file_path.name}.tmp-{os.getpid()}")
+    temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(file_path)
+
+
+def read_task_state(file_path):
+    if not file_path.exists():
+        return None
+    try:
+        return json.loads(file_path.read_text(encoding="utf-8"))
+    except Exception as error:
+        die(f"failed to parse task file {file_path}: {error}")
+
+
 def post_json(endpoint, api_key, body):
     data = json.dumps(body).encode("utf-8")
     request = urllib.request.Request(
@@ -521,7 +546,7 @@ def build_images_request(prompt, args, config):
     if not model:
         die("no image model found. Set provider image_model or pass --image-model.")
 
-    fields = {"model": model, "prompt": prompt}
+    fields = {"model": model, "prompt": prompt, "async": True}
     option_map = {
         "background": "background",
         "input_fidelity": "input_fidelity",
@@ -556,7 +581,7 @@ def encode_multipart(fields, image_paths, mask_path=None):
         add_line(f"--{boundary}")
         add_line(f'Content-Disposition: form-data; name="{name}"')
         add_line()
-        add_line(str(value))
+        add_line("true" if value is True else "false" if value is False else str(value))
 
     image_field = "image" if len(image_paths) == 1 else "image[]"
     for image_path_value in image_paths:
@@ -602,6 +627,66 @@ def post_bytes(endpoint, api_key, content_type, body):
         return error.code, error.read()
 
 
+def request_json(url, api_key):
+    request = urllib.request.Request(url, headers={"Authorization": f"Bearer {api_key}"})
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            status, raw = response.status, response.read()
+    except urllib.error.HTTPError as error:
+        status, raw = error.code, error.read()
+    payload = parse_response_json(status, raw)
+    if status < 200 or status >= 300:
+        error = RuntimeError(f"HTTP {status}")
+        error.status, error.body = status, payload
+        raise error
+    return payload
+
+
+def image_data_available(response_json):
+    return any(item.get("url") or item.get("b64_json") for item in response_json.get("data") or [])
+
+
+def image_error_message(body):
+    error = body.get("error") if isinstance(body, dict) else None
+    return (error.get("message") if isinstance(error, dict) else error) or body.get("failure_reason") or body.get("message") or json.dumps(body)[:1000]
+
+
+def wait_for_image(task_id, args, config, current, output_format, state_file):
+    started = time.monotonic()
+    timeout = float(args.timeout or 1800)
+    delay = max(1.0, float(args.poll_interval or 5))
+    retries = 0
+    while True:
+        status = str(current.get("status", "")).lower()
+        if status == "succeeded" and image_data_available(current):
+            write_task_state(state_file, {"id": task_id, "status": status, "progress": current.get("progress", 100), "created": current.get("created"), "model": current.get("model", config["image_model"]), "output": args.out, "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
+            return current
+        if status in {"failed", "cancelled", "canceled"}:
+            die(f"image task {task_id} failed: {image_error_message(current)}")
+        if time.monotonic() - started > timeout:
+            die(f"timed out waiting for image task {task_id}; use --resume {task_id} to continue later.")
+        progress_value = f" ({current.get('progress')}%)" if current.get("progress") is not None else ""
+        progress(args, f"Image task {task_id}: {status or 'unknown'}{progress_value}; waited {round(time.monotonic() - started)}s.")
+        time.sleep(delay)
+        try:
+            current = request_json(f"{config['base_url']}/status/{urllib.parse.quote(task_id, safe='')}", config["api_key"])
+            write_task_state(state_file, {"id": task_id, "status": current.get("status"), "progress": current.get("progress"), "created": current.get("created"), "model": current.get("model", config["image_model"]), "output": args.out, "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
+            retries = 0
+            delay = min(60, max(1.0, float(args.poll_interval or 5)) * 2)
+            retry_after = current.get("retry_after", current.get("retryAfter"))
+            if isinstance(retry_after, (int, float)) and retry_after > 0:
+                delay = retry_after
+        except Exception as error:
+            retryable_http = hasattr(error, "status") and error.status in {408, 425, 429, 500, 502, 503, 504}
+            retryable_network = isinstance(error, (urllib.error.URLError, TimeoutError, ConnectionError, OSError))
+            if not retryable_http and not retryable_network:
+                die(f"image status check failed for task {task_id}: {error}")
+            retries += 1
+            delay = min(60, 2 ** min(retries, 6))
+            code = f"HTTP {error.status}" if hasattr(error, "status") else str(error)
+            progress(args, f"Status check failed ({code}); retrying ({retries}) in {delay}s. Task {task_id} is not being recreated.")
+
+
 def download_image(url):
     try:
         with urllib.request.urlopen(url) as response:
@@ -640,6 +725,13 @@ def run_images_api(prompt, args, config):
     if image_request["action"] == "generate" and (args.image or args.mask):
         die("Images API generate mode does not accept --image or --mask. Use --action edit.")
 
+    state_file = task_state_path(args)
+    resume_state = None
+    if args.resume:
+        resume_path = Path(args.resume)
+        resume_state = read_task_state(resume_path.resolve()) if resume_path.exists() else read_task_state(state_file)
+    resume_id = (resume_state or {}).get("id") or args.resume
+
     if args.dry_run:
         print(json.dumps({
             "codex_home": config["codex_home"],
@@ -660,8 +752,23 @@ def run_images_api(prompt, args, config):
                 ],
                 "input_optimization": args.input_optimization,
                 "mask": str(Path(args.mask).resolve()) if args.mask else None,
+                "task_file": str(state_file),
+                "resume_id": resume_id,
             },
         }, indent=2))
+        return
+
+    output_format = (
+        image_request["fields"].get("output_format")
+        or Path(args.out).suffix.lstrip(".")
+        or "png"
+    )
+    if resume_id:
+        progress(args, f"Resuming existing image task {resume_id}; no create request will be sent.")
+        completed = wait_for_image(resume_id, args, config, {"id": resume_id, "status": "queued"}, output_format, state_file)
+        written = write_images_results(completed, args.out, output_format)
+        summary = {"id": resume_id, "status": completed.get("status"), "provider": config["provider_name"], "image_api": config["image_api"], "image_model": config["image_model"], "outputs": written}
+        print(json.dumps(summary, indent=2) if args.json else "\n".join(f"Wrote {file_path}" for file_path in written))
         return
 
     stop_progress = start_progress(args)
@@ -679,7 +786,7 @@ def run_images_api(prompt, args, config):
             )
     finally:
         stop_progress()
-    progress(args, "Response received. Decoding image data.")
+    progress(args, "Response received. Decoding image task.")
 
     response_json = parse_response_json(status, response_bytes)
     if status < 200 or status >= 300:
@@ -693,17 +800,20 @@ def run_images_api(prompt, args, config):
         )
         die(f"API request failed with status {status}: {message}")
 
-    output_format = (
-        image_request["fields"].get("output_format")
-        or Path(args.out).suffix.lstrip(".")
-        or "png"
-    )
-    written = write_images_results(response_json, args.out, output_format)
+    task_id = response_json.get("id")
+    completed = response_json
+    if not image_data_available(response_json) or str(response_json.get("status", "")).lower() != "succeeded":
+        if not task_id:
+            die(f"Images API response contained neither final data nor a task id: {json.dumps(response_json)[:1000]}")
+        write_task_state(state_file, {"id": task_id, "status": response_json.get("status"), "progress": response_json.get("progress"), "created": response_json.get("created"), "model": image_request["fields"]["model"], "output": args.out, "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
+        completed = wait_for_image(task_id, args, config, response_json, output_format, state_file)
+    written = write_images_results(completed, args.out, output_format)
     summary = {
         "provider": config["provider_name"],
         "image_api": config["image_api"],
         "base_url": config["base_url"],
         "image_model": image_request["fields"]["model"],
+        "id": task_id or completed.get("id"),
         "outputs": written,
     }
     if args.json:
@@ -790,9 +900,11 @@ def run_responses_api(prompt, args, config):
 
 def main():
     args = parse_args()
-    prompt = read_prompt(args)
+    prompt = None if args.resume else read_prompt(args)
     config = resolve_codex_config(args)
-    temp_dir = optimize_input_images(args)
+    if args.resume and config["image_api"] != "images":
+        die("--resume is only supported for CUMOB Images API tasks, not Responses API tasks.")
+    temp_dir = None if args.resume else optimize_input_images(args)
     try:
         if config["image_api"] == "images":
             run_images_api(prompt, args, config)

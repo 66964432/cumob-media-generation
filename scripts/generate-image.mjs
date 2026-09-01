@@ -42,6 +42,10 @@ Image generation options:
 
 Other:
   --no-input-optimization     Upload original input images without local preprocessing.
+  --poll-interval <seconds>   Initial status poll delay. Default: 5.
+  --timeout <seconds>         Overall async task timeout. Default: 1800.
+  --resume <id-or-file>       Resume an existing CUMOB image task without creating a new task.
+  --task-file <path>          Persist image task state. Default: <out>.task.json.
   --dry-run                   Print redacted config and request body without calling the API.
   --json                      Print machine-readable result summary.
   --no-progress               Disable progress messages on stderr while waiting for the API.
@@ -74,6 +78,50 @@ function startProgress(args) {
   if (typeof timer.unref === "function") timer.unref();
 
   return () => clearInterval(timer);
+}
+
+function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+
+function taskStatePath(args, outputPath) {
+  return path.resolve(args["task-file"] || `${outputPath}.task.json`);
+}
+
+function writeTaskState(filePath, state) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const temp = `${filePath}.tmp-${process.pid}`;
+  fs.writeFileSync(temp, `${JSON.stringify(state, null, 2)}\n`);
+  fs.renameSync(temp, filePath);
+}
+
+function readTaskState(filePath) {
+  if (!fs.existsSync(filePath)) return null;
+  try { return JSON.parse(fs.readFileSync(filePath, "utf8")); } catch (error) { die(`failed to parse task file ${filePath}: ${error.message}`); }
+}
+
+class HttpError extends Error {
+  constructor(status, body) { super(`HTTP ${status}`); this.status = status; this.body = body; }
+}
+
+function transientError(error) {
+  if (error instanceof HttpError) return [408, 425, 429, 500, 502, 503, 504].includes(error.status);
+  return error?.name === "TypeError" || error?.name === "AbortError" || /fetch failed|network|timeout|reset|socket|connect/i.test(error?.message || "");
+}
+
+function apiErrorMessage(body) {
+  return body?.error?.message || body?.error || body?.failure_reason || body?.message || JSON.stringify(body).slice(0, 1000);
+}
+
+async function requestJson(url, options, timeoutMs = 60000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let response;
+  try { response = await fetch(url, { ...options, signal: options.signal || controller.signal }); }
+  finally { clearTimeout(timer); }
+  const text = await response.text();
+  let json;
+  try { json = text ? JSON.parse(text) : {}; } catch { throw new HttpError(response.status, { raw: text.slice(0, 500) }); }
+  if (!response.ok) throw new HttpError(response.status, json);
+  return json;
 }
 
 function parseArgs(argv) {
@@ -516,7 +564,9 @@ function buildImagesRequest(prompt, args, config) {
     die("no image model found. Set provider image_model or pass --image-model.");
   }
 
-  const fields = { model, prompt };
+  // CUMOB returns a task object immediately when async=true. Keep this on
+  // both JSON and multipart requests so image generation never blocks on POST.
+  const fields = { model, prompt, async: true };
   const optionMap = {
     background: "background",
     "input-fidelity": "input_fidelity",
@@ -565,6 +615,50 @@ async function writeImagesResults(responseJson, outputPath, outputFormat) {
   return written;
 }
 
+function imageDataAvailable(responseJson) {
+  return Array.isArray(responseJson?.data) && responseJson.data.length > 0 &&
+    responseJson.data.some((item) => item?.url || item?.b64_json);
+}
+
+async function waitForImage(id, args, config, initial, outputPath, outputFormat, stateFile) {
+  let current = initial;
+  const started = Date.now();
+  const timeoutMs = Number(args.timeout || 1800) * 1000;
+  let delayMs = Math.max(1, Number(args["poll-interval"] || 5)) * 1000;
+  let retryAttempt = 0;
+  while (true) {
+    const status = String(current?.status || "").toLowerCase();
+    if (status === "succeeded" && imageDataAvailable(current)) {
+      writeTaskState(stateFile, { id, status, progress: current.progress ?? 100, created: current.created, model: current.model || config.imageModel, output: outputPath, updated_at: new Date().toISOString() });
+      return current;
+    }
+    if (["failed", "cancelled", "canceled"].includes(status)) {
+      die(`image task ${id} failed: ${apiErrorMessage(current)}`);
+    }
+    if (Date.now() - started > timeoutMs) {
+      die(`timed out waiting for image task ${id}; use --resume ${id} to continue later.`);
+    }
+    const elapsed = Math.round((Date.now() - started) / 1000);
+    progress(args, `Image task ${id}: ${status || "unknown"}${current?.progress !== undefined ? ` (${current.progress}%)` : ""}; waited ${elapsed}s.`);
+    await sleep(delayMs);
+    try {
+      current = await requestJson(`${config.baseUrl}/status/${encodeURIComponent(id)}`, { headers: { Authorization: `Bearer ${config.apiKey}` } });
+      writeTaskState(stateFile, { id, status: current.status, progress: current.progress, created: current.created, model: current.model || config.imageModel, output: outputPath, updated_at: new Date().toISOString() });
+      retryAttempt = 0;
+      delayMs = Math.min(60000, Math.max(1, Number(args["poll-interval"] || 5)) * 1000 * 2);
+      const retryAfter = Number(current?.retry_after || current?.retryAfter);
+      if (Number.isFinite(retryAfter) && retryAfter > 0) delayMs = retryAfter * 1000;
+    } catch (error) {
+      if (!transientError(error) || Date.now() - started > timeoutMs) {
+        die(`temporary network error while polling image task ${id}: ${error.message || error}. The task may still be running; resume with --resume ${id}.`);
+      }
+      retryAttempt += 1;
+      delayMs = Math.min(60000, 1000 * (2 ** Math.min(retryAttempt, 6)));
+      progress(args, `Status check failed (${error instanceof HttpError ? `HTTP ${error.status}` : (error.message || "network error")}); retrying (${retryAttempt}) in ${Math.round(delayMs / 1000)}s. Task ${id} is not being recreated.`);
+    }
+  }
+}
+
 async function runImagesApi(prompt, args, config, outputPath) {
   const request = buildImagesRequest(prompt, args, config);
   if (request.action === "edit" && args.image.length === 0) {
@@ -573,6 +667,10 @@ async function runImagesApi(prompt, args, config, outputPath) {
   if (request.action === "generate" && (args.image.length > 0 || args.mask)) {
     die("Images API generate mode does not accept --image or --mask. Use --action edit.");
   }
+
+  const stateFile = taskStatePath(args, outputPath);
+  const resumeState = args.resume ? (fs.existsSync(args.resume) ? readTaskState(path.resolve(args.resume)) : readTaskState(stateFile)) : null;
+  const resumeId = resumeState?.id || args.resume;
 
   if (args["dry-run"]) {
     console.log(JSON.stringify({
@@ -592,8 +690,21 @@ async function runImagesApi(prompt, args, config, outputPath) {
         original_images: args.originalImages?.map((imagePath) => path.resolve(imagePath)),
         input_optimization: args.inputOptimization,
         mask: args.mask ? path.resolve(args.mask) : undefined,
+        task_file: stateFile,
+        resume_id: resumeId || null,
       },
     }, null, 2));
+    return;
+  }
+
+  if (resumeId) {
+    if (config.imageApi !== "images") die("--resume is only supported for CUMOB Images API tasks, not Responses API tasks.");
+    const outputFormat = path.extname(outputPath).replace(".", "") || "png";
+    progress(args, `Resuming existing image task ${resumeId}; no create request will be sent.`);
+    const completed = await waitForImage(resumeId, args, config, { id: resumeId, status: "queued" }, outputPath, outputFormat, stateFile);
+    const written = await writeImagesResults(completed, outputPath, outputFormat);
+    if (args.json) console.log(JSON.stringify({ id: resumeId, status: completed.status, provider: config.providerName, image_api: config.imageApi, image_model: config.imageModel, outputs: written }, null, 2));
+    else for (const filePath of written) console.log(`Wrote ${filePath}`);
     return;
   }
 
@@ -636,7 +747,7 @@ async function runImagesApi(prompt, args, config, outputPath) {
   } finally {
     stopProgress();
   }
-  progress(args, "Response received. Decoding image data.");
+  progress(args, "Response received. Decoding image task.");
 
   let responseJson;
   try {
@@ -650,12 +761,20 @@ async function runImagesApi(prompt, args, config, outputPath) {
   }
 
   const outputFormat = request.fields.output_format || path.extname(outputPath).replace(".", "") || "png";
-  const written = await writeImagesResults(responseJson, outputPath, outputFormat);
+  let completed = responseJson;
+  const taskId = responseJson.id;
+  if (!imageDataAvailable(responseJson) || String(responseJson.status || "").toLowerCase() !== "succeeded") {
+    if (!taskId) die(`Images API response contained neither final data nor a task id: ${JSON.stringify(responseJson).slice(0, 1000)}`);
+    writeTaskState(stateFile, { id: taskId, status: responseJson.status, progress: responseJson.progress, created: responseJson.created, model: request.fields.model, output: outputPath, updated_at: new Date().toISOString() });
+    completed = await waitForImage(taskId, args, config, responseJson, outputPath, outputFormat, stateFile);
+  }
+  const written = await writeImagesResults(completed, outputPath, outputFormat);
   const summary = {
     provider: config.providerName,
     image_api: config.imageApi,
     base_url: config.baseUrl,
     image_model: request.fields.model,
+    id: taskId || completed.id,
     outputs: written,
   };
   if (args.json) {
@@ -676,10 +795,10 @@ async function main() {
     return;
   }
 
-  const prompt = await readPrompt(args);
+  const prompt = args.resume ? null : await readPrompt(args);
   const config = resolveCodexConfig(args);
   const outputPath = args.out || "generated.png";
-  const cleanupOptimizedInputs = optimizeInputImages(args);
+  const cleanupOptimizedInputs = args.resume ? () => {} : optimizeInputImages(args);
   try {
     if (config.imageApi === "images") {
       await runImagesApi(prompt, args, config, outputPath);

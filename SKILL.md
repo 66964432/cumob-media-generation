@@ -1,16 +1,20 @@
 ---
-name: cumob-image-generation4codex
-description: Use this skill whenever the user asks to generate, edit, inpaint, restyle, or create bitmap images through a configured OpenAI-compatible provider. It automatically uses the direct Images API when provider image_api is "images" (including CUMOB /images/generations and /images/edits), otherwise it uses the Responses API image_generation tool.
+name: cumob-media-generation4codex
+description: Use this skill whenever the user asks to generate or edit images (生图/生成图片), or generate videos (生视频/生成视频), through the configured CUMOB/OpenAI-compatible provider. Route image requests to the bundled image script and video requests to the bundled CUMOB Videos API script.
 ---
 
-# Configured Image Generation
+# Configured CUMOB Image and Video Generation
 
 Use this skill to create or edit images through the active Codex provider. The bundled scripts select the backend from `[model_providers.<name>].image_api`:
 
 - `image_api = "images"`: call `<base_url>/images/generations` or `<base_url>/images/edits` directly.
 - `image_api = "responses"` or unset: call `<base_url>/responses` with the `image_generation` tool.
 
-For CUMOB, configure `base_url = "http://api.cumob.com/v1"`, `image_api = "images"`, and `image_model = "gpt-image-2-ref"`.
+For CUMOB, configure `base_url = "https://api.cumob.com/v1"`, `image_api = "images"`, and `image_model = "gpt-image-2-ref"`.
+
+For CUMOB video generation, use the bundled `scripts/generate-video.mjs` (or its Python fallback). Configure `video_api = "videos"` and `video_model = "minimax-h3"`. The script calls `<base_url>/videos` with `async=true` and polls `<base_url>/status/{id}`. Video requests use the CUMOB-specific `duration` (10-15 for `minimax-h3`), `aspect_ratio`, `images`, and `metadata.videos`/`metadata.audios` fields; local reference media use multipart upload, while URL-only references use JSON when possible. Do not send image-only options such as `quality`, `size`, or `resolution`.
+
+For CUMOB image generation/editing, use `image_api = "images"`. The bundled Images API path sends `async=true` for both JSON generation and multipart edits, then polls `<base_url>/status/{id}` until the task succeeds. It accepts synchronous final responses as a compatibility fallback. `--resume` and `<output>.task.json` can resume an image task without creating a duplicate.
 
 ## Runtime And Dependencies
 
@@ -18,7 +22,7 @@ For CUMOB, configure `base_url = "http://api.cumob.com/v1"`, `image_api = "image
 - Fallback runtime: Python 3 with `scripts/generate-image.py` when Node is unavailable.
 - The Node script uses only built-in modules: `fs`, `os`, `path`, and `child_process`, plus built-in `fetch`.
 - The Python script uses only the standard library: `urllib`, `json`, `base64`, `pathlib`, and related built-ins.
-- Local input optimization uses macOS `sips` when available, or ImageMagick's `magick` command on other platforms. Neither tool is required; the scripts fall back to the original image when no optimizer is available.
+- Local image input optimization uses macOS `sips` when available, or ImageMagick's `magick` command on other platforms. Neither tool is required; the scripts fall back to the original image when no optimizer is available. Local video/audio files are uploaded as-is; they are not transcoded.
 - Does not require `npm install`, `pip install`, the OpenAI SDK, curl, jq, or base64 shell utilities.
 - Works on Linux, macOS, and Windows when run as `node <skill-dir>/scripts/generate-image.mjs ...` or `python3 <skill-dir>/scripts/generate-image.py ...`.
 - Do not rely on executable bits, shebang behavior, or Bash line continuations for Windows usage.
@@ -34,6 +38,7 @@ Use Codex's API configuration by default:
 - Use provider `base_url` as the API URL.
 - Use provider `image_api` to select `images` or `responses`; default to `responses` for backward compatibility.
 - Use provider `image_model` as the image model unless `--image-model` overrides it.
+- Use provider `video_model` as the video model unless `--video-model` overrides it; the video script defaults to `minimax-h3`.
 - Use the top-level `model` as the Responses model unless the user explicitly asks for another model.
 - Read `OPENAI_API_KEY` from the matching `auth.json`.
 - Do not ask the user for an API key when Codex config is available.
@@ -41,7 +46,7 @@ Use Codex's API configuration by default:
 - Do not read or display `auth.json` yourself during normal use; let the bundled script read it inside the child process.
 - Do not pass secret values on the command line. The scripts intentionally reject `--api-key <value>`.
 
-If the Codex config is unavailable, the script falls back to `OPENAI_BASE_URL`, `OPENAI_MODEL`, and `OPENAI_API_KEY`. Environment variable lookup is case-insensitive so Windows variants such as `openai_api_key` still resolve. Treat this as a fallback, not the normal path.
+If the Codex config is unavailable, the scripts fall back to `OPENAI_BASE_URL`, `OPENAI_MODEL`, `OPENAI_IMAGE_MODEL`, `OPENAI_VIDEO_MODEL`, and `OPENAI_API_KEY`. Environment variable lookup is case-insensitive so Windows variants such as `openai_api_key` still resolve. Treat this as a fallback, not the normal path.
 
 If the user keeps the key in a different environment variable, pass only the variable name:
 
@@ -79,6 +84,10 @@ Treat image generation and editing as long-running operations. A normal request 
 - Treat `[image-generation] Still waiting...` messages as healthy progress, not as a failure condition.
 - Use `--no-progress` only when stderr must stay silent; otherwise leave progress enabled so long requests are visibly alive.
 
+Image and video generation are long-running. Send exactly one create request with `async=true`, then let the corresponding script poll the returned task id until `succeeded` or `failed`. Never start another create request merely because the status is `queued` or `running`. Polling uses exponential backoff and treats transient network/408/425/429/5xx errors as recoverable. If the process is interrupted or reaches its local timeout, keep the task file and use `--resume <id>` to continue polling the existing task.
+
+The image and video scripts persist the task id and latest status in `<output>.task.json` (or the path supplied with `--task-file`) immediately after creation. Treat `TypeError: fetch failed`, connection resets, timeouts, and transient 4xx/5xx status responses during polling as recoverable; the scripts retry them with backoff while keeping the same task id. A create request whose response cannot be confirmed must not be blindly retried, because CUMOB may already have accepted it.
+
 ## Automatic Input Optimization
 
 Input optimization is a fixed part of the default workflow. Before an edit request, the scripts inspect every `--image` file and locally prepare a temporary upload copy when the file is larger than 4 MB:
@@ -101,9 +110,10 @@ Use `--no-input-optimization` only when exact source bytes are required or local
 
 ## Default Workflow
 
-1. Clarify only missing creative requirements that materially affect the image, such as subject, style, aspect ratio, or output filename.
-2. Prefer saving generated files under a local output directory such as `outputs/` unless the user named a path.
-3. Run one bundled script once and wait for it to complete. The script automatically optimizes large input copies locally, selects the configured image backend, and deletes temporary files after the request. Prefer Node when available:
+1. Determine whether the user wants an image or a video. Use `generate-image.mjs` for image/edit requests and `generate-video.mjs` for video requests.
+2. Clarify only missing requirements that materially affect the requested media, such as subject, duration, aspect ratio, reference inputs, or output filename.
+3. Prefer saving generated files under a local output directory such as `outputs/` unless the user named a path.
+4. Run one bundled script once and wait for it to complete. The image script creates one async CUMOB task, polls it, and saves URL/Base64 results; the video script creates one async task, polls it, and downloads the MP4. Prefer Node when available:
 
    ```bash
    node <skill-dir>/scripts/generate-image.mjs \
@@ -133,8 +143,8 @@ Use `--no-input-optimization` only when exact source bytes are required or local
      --quality high
    ```
 
-4. If network access is restricted, request the narrowest command approval needed to run the script. Explain that the command calls the user's configured OpenAI-compatible API endpoint.
-5. Report the created image path and key generation settings. Do not include raw response JSON unless debugging is needed.
+5. If network access is restricted, request the narrowest command approval needed to run the script. Explain that the command calls the user's configured CUMOB/OpenAI-compatible API endpoint.
+6. Report the created media path and key generation settings. Do not include raw response JSON unless debugging is needed.
 
 For Windows PowerShell, use backticks for line continuation or put the command on one line:
 
@@ -161,6 +171,29 @@ py -3 <skill-dir>\scripts\generate-image.py --prompt "A precise image prompt" --
 If neither Node nor Python is available, stop and tell the user one local runtime is required. Do not try to install one unless the user explicitly approves it.
 
 ## Common Commands
+
+Generate a video with CUMOB `minimax-h3`:
+
+```bash
+node <skill-dir>/scripts/generate-video.mjs \
+  --prompt "一只猫在阳光下追逐@图片1中的毛线球" \
+  --image reference.png \
+  --duration 10 \
+  --aspect-ratio 16:9 \
+  --out outputs/cat.mp4
+```
+
+Reference videos and audios can be supplied as local files (`--video`, `--audio`) or public URLs (`--video-url`, `--audio-url`). They are referenced in the prompt with `@视频1` and `@音频1`:
+
+```bash
+node <skill-dir>/scripts/generate-video.mjs \
+  --prompt "按照@视频1的动作节奏并使用@音频1的声音氛围" \
+  --video-url https://example.com/motion.mp4 \
+  --audio-url https://example.com/audio.mp3 \
+  --out outputs/remix.mp4
+```
+
+For `minimax-h3`, `duration` must be an integer from 10 through 15 (default 10), and the total number of image, video, and audio references must not exceed 12.
 
 Generate a new image:
 
@@ -259,6 +292,10 @@ The scripts map common image generation options to either the Images API or Resp
 
 Images API mode accepts either `data[].b64_json` or `data[].url` responses. Responses mode reads `output[].type == image_generation_call`.
 
+When using the CUMOB Images API, requests include `async=true` by default. Use `--resume <id>` or `--resume <task-file>` after an interrupted image task; no second create request is sent.
+
+Video options are exposed by `scripts/generate-video.mjs`: `--video-model`, `--duration`, `--aspect-ratio`, `--image`, `--image-url`, `--video`, `--video-url`, `--audio`, `--audio-url`, `--poll-interval`, `--timeout`, `--resume`, and `--task-file`. The video script does not accept `metadata-json`, `resolution`, or `size` for `minimax-h3`.
+
 ## Quality Guidance
 
 For better results, write prompts with concrete visual constraints:
@@ -280,3 +317,5 @@ If no image result is returned:
 - For `image_api = "responses"`, verify the provider supports the Responses API `image_generation` tool.
 - Do not expose the API key while debugging. Redact request headers and auth fields.
 - Do not use `cat`, `type`, `Get-Content`, or similar commands on `auth.json` for debugging. Use the script's `--dry-run`, which only reports `has_api_key` and `api_key_source`.
+- For video failures, inspect the returned task `id`, `status`, `error`, and `failure_reason`; use `--resume <id>` instead of creating a duplicate task.
+- If polling stops because the overall timeout is reached, keep the task file and resume the same task later; do not send a new POST unless you have confirmed that the old task was never created.
