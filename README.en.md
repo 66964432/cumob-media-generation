@@ -131,7 +131,7 @@ base_url = "https://api.cumob.com/v1"
 image_api = "images"
 image_model = "gpt-image-2-ref"
 video_api = "videos"
-video_model = "minimax-h3"
+video_model = "minimax-h3-ref"
 ```
 
 The scripts call:
