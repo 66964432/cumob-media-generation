@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import math
 import mimetypes
 import os
 from pathlib import Path
@@ -18,6 +19,7 @@ import json
 
 
 RATIOS = {"16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "3:2", "2:3"}
+DEFAULT_POLL_INTERVAL_SECONDS = 30.0
 
 
 def die(message, code=1):
@@ -344,6 +346,16 @@ def video_url_of(body):
     return body.get("video_url") if isinstance(body, dict) else None
 
 
+def poll_interval_seconds(args):
+    try:
+        value = float(args.poll_interval)
+    except (TypeError, ValueError):
+        return DEFAULT_POLL_INTERVAL_SECONDS
+    if not math.isfinite(value):
+        return DEFAULT_POLL_INTERVAL_SECONDS
+    return max(1.0, value)
+
+
 def transient_network_error(error):
     return isinstance(error, (urllib.error.URLError, TimeoutError, ConnectionError, OSError))
 
@@ -352,7 +364,8 @@ def wait_for_video(task_id, args, config, current, state_file):
     started = time.monotonic()
     timeout = float(args.timeout or 1800)
     retries = 0
-    delay = max(1.0, float(args.poll_interval or 5))
+    configured_delay = poll_interval_seconds(args)
+    delay = configured_delay
     while True:
         status = str(current.get("status", "")).lower()
         url = video_url_of(current)
@@ -371,7 +384,7 @@ def wait_for_video(task_id, args, config, current, state_file):
             current = request_json(f"{config['status_url']}/{urllib.parse.quote(task_id, safe='')}", config["api_key"])
             write_task_state(state_file, {"id": task_id, "status": current.get("status"), "progress": current.get("progress"), "created": current.get("created"), "model": current.get("model", config["model"]), "output": args.out, "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
             retries = 0
-            delay = min(60, max(1.0, float(args.poll_interval or 5)) * 2)
+            delay = configured_delay
             retry_after = current.get("retry_after", current.get("retryAfter"))
             if isinstance(retry_after, (int, float)) and retry_after > 0:
                 delay = retry_after
@@ -437,7 +450,7 @@ def parse_args():
     parser.add_argument("--input-jpeg-quality", type=int, default=85)
     parser.add_argument("--input-optimize-threshold-mb", type=float, default=4)
     parser.add_argument("--no-input-optimization", action="store_true")
-    parser.add_argument("--poll-interval", type=float, default=5)
+    parser.add_argument("--poll-interval", type=float, default=DEFAULT_POLL_INTERVAL_SECONDS, help="Status poll interval in seconds (default: 30).")
     parser.add_argument("--timeout", type=float, default=1800)
     parser.add_argument("--resume")
     parser.add_argument("--task-file")

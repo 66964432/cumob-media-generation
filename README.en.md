@@ -33,8 +33,12 @@ Current version: `0.4.0`
   exposing API keys or image contents.
 - Compresses reference images larger than 4 MB into temporary uploads with a
   maximum dimension of 1536 pixels.
-- Uses `async=true` by default for CUMOB image and video tasks, with status
-  polling, exponential backoff, and resume support.
+- Uses `async=true` by default for CUMOB image and video tasks, with a fixed
+  30-second status polling interval (overridable with `--poll-interval <seconds>`).
+  Successful status checks keep that configured interval; server-provided
+  `retry_after`/`retryAfter` values take precedence, while transient network
+  errors and 408/425/429/5xx responses use independent exponential backoff up to
+  60 seconds. Tasks can be resumed without creating a duplicate request.
 - Loads video model capabilities from `video-models.json`; duration limits are
   resolved by model and resolution automatically. For example,
   `agnes-video-v2.0-ref` supports 3-18 seconds at 480p/720p and 3-10 seconds
@@ -364,9 +368,12 @@ The video status endpoint is `<base_url>/status/{id}`. Once the task succeeds,
 the script downloads `data[].video_url`.
 
 The script stores the task ID and latest status next to the output as
-`<output>.task.json`. Temporary polling disconnects are retried with backoff,
-and the task is never recreated. Images API requests include `async=true` and
-support the same `--resume` flow.
+`<output>.task.json`. Successful status checks use the configured fixed interval
+(30 seconds by default) rather than increasing after each check. Server-provided
+`retry_after`/`retryAfter` values take precedence; temporary polling disconnects
+are retried with independent exponential backoff up to 60 seconds, and the task
+is never recreated. Images API requests include `async=true` and support the
+same `--resume` flow.
 
 ### Incorrect Backend Path
 

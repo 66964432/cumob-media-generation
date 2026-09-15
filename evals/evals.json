@@ -50,7 +50,7 @@
     {
       "id": 8,
       "prompt": "生成一张图片，要求使用 CUMOB Images API 的异步模式，并在任务完成后保存结果。",
-      "expected_output": "The agent sends exactly one Images API create request with async=true, persists the returned task id, polls /v1/status/{id} with exponential backoff, and saves data[].url or data[].b64_json without creating a duplicate task.",
+      "expected_output": "The agent sends exactly one Images API create request with async=true, persists the returned task id, polls /v1/status/{id} at the fixed configured interval (30 seconds by default), uses exponential backoff only for transient polling errors, and saves data[].url or data[].b64_json without creating a duplicate task.",
       "files": []
     },
     {

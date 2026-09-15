@@ -5,6 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
+const DEFAULT_POLL_INTERVAL_SECONDS = 30;
+
 const HELP = `
 Usage:
   node scripts/generate-image.mjs --prompt "..." --out outputs/image.png [options]
@@ -42,7 +44,7 @@ Image generation options:
 
 Other:
   --no-input-optimization     Upload original input images without local preprocessing.
-  --poll-interval <seconds>   Initial status poll delay. Default: 5.
+  --poll-interval <seconds>   Status poll interval. Default: ${DEFAULT_POLL_INTERVAL_SECONDS}.
   --timeout <seconds>         Overall async task timeout. Default: 1800.
   --resume <id-or-file>       Resume an existing CUMOB image task without creating a new task.
   --task-file <path>          Persist image task state. Default: <out>.task.json.
@@ -81,6 +83,12 @@ function startProgress(args) {
 }
 
 function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+
+function pollIntervalMs(args) {
+  const value = Number(args["poll-interval"] ?? DEFAULT_POLL_INTERVAL_SECONDS);
+  const seconds = Number.isFinite(value) ? Math.max(1, value) : DEFAULT_POLL_INTERVAL_SECONDS;
+  return seconds * 1000;
+}
 
 function taskStatePath(args, outputPath) {
   return path.resolve(args["task-file"] || `${outputPath}.task.json`);
@@ -624,7 +632,8 @@ async function waitForImage(id, args, config, initial, outputPath, outputFormat,
   let current = initial;
   const started = Date.now();
   const timeoutMs = Number(args.timeout || 1800) * 1000;
-  let delayMs = Math.max(1, Number(args["poll-interval"] || 5)) * 1000;
+  const configuredDelayMs = pollIntervalMs(args);
+  let delayMs = configuredDelayMs;
   let retryAttempt = 0;
   while (true) {
     const status = String(current?.status || "").toLowerCase();
@@ -645,7 +654,7 @@ async function waitForImage(id, args, config, initial, outputPath, outputFormat,
       current = await requestJson(`${config.baseUrl}/status/${encodeURIComponent(id)}`, { headers: { Authorization: `Bearer ${config.apiKey}` } });
       writeTaskState(stateFile, { id, status: current.status, progress: current.progress, created: current.created, model: current.model || config.imageModel, output: outputPath, updated_at: new Date().toISOString() });
       retryAttempt = 0;
-      delayMs = Math.min(60000, Math.max(1, Number(args["poll-interval"] || 5)) * 1000 * 2);
+      delayMs = configuredDelayMs;
       const retryAfter = Number(current?.retry_after || current?.retryAfter);
       if (Number.isFinite(retryAfter) && retryAfter > 0) delayMs = retryAfter * 1000;
     } catch (error) {

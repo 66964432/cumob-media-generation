@@ -6,6 +6,8 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { spawnSync } from "node:child_process";
 
+const DEFAULT_POLL_INTERVAL_SECONDS = 30;
+
 const HELP = `
 Usage:
   node scripts/generate-video.mjs --prompt "..." --out outputs/video.mp4 [options]
@@ -38,7 +40,7 @@ Video options (minimax-h3):
   --task-file <path>          Persist task id/status for recovery. Default: <out>.task.json.
 
 Other:
-  --poll-interval <seconds>   Poll interval. Default: 5.
+  --poll-interval <seconds>   Poll interval. Default: ${DEFAULT_POLL_INTERVAL_SECONDS}.
   --timeout <seconds>         Overall timeout. Default: 1800.
   --dry-run                   Print redacted config/request without calling the API.
   --json                      Print a machine-readable summary.
@@ -399,13 +401,20 @@ function videoUrlOf(body) {
 
 function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 
+function pollIntervalMs(args) {
+  const value = Number(args["poll-interval"] ?? DEFAULT_POLL_INTERVAL_SECONDS);
+  const seconds = Number.isFinite(value) ? Math.max(1, value) : DEFAULT_POLL_INTERVAL_SECONDS;
+  return seconds * 1000;
+}
+
 async function waitForVideo(id, args, config, initial) {
   let current = initial;
   const started = Date.now();
   const timeoutMs = Number(args.timeout || 1800) * 1000;
   const stateFile = taskStatePath(args, args.out || "generated.mp4");
   let attempt = 0;
-  let delayMs = Math.max(1, Number(args["poll-interval"] || 5)) * 1000;
+  const configuredDelayMs = pollIntervalMs(args);
+  let delayMs = configuredDelayMs;
   while (true) {
     const status = statusOf(current);
     const url = videoUrlOf(current);
@@ -424,7 +433,7 @@ async function waitForVideo(id, args, config, initial) {
       });
       writeTaskState(stateFile, { id, status: current.status, progress: current.progress, created: current.created, model: current.model || config.model, output: args.out, updated_at: new Date().toISOString() });
       attempt = 0;
-      delayMs = Math.min(60000, Math.max(1, Number(args["poll-interval"] || 5)) * 1000 * 2);
+      delayMs = configuredDelayMs;
       const retryAfter = Number(current?.retry_after || current?.retryAfter);
       if (Number.isFinite(retryAfter) && retryAfter > 0) delayMs = retryAfter * 1000;
     } catch (error) {

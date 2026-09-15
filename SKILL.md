@@ -84,7 +84,7 @@ Treat image generation and editing as long-running operations. A normal request 
 - Treat `[image-generation] Still waiting...` messages as healthy progress, not as a failure condition.
 - Use `--no-progress` only when stderr must stay silent; otherwise leave progress enabled so long requests are visibly alive.
 
-Image and video generation are long-running. Send exactly one create request with `async=true`, then let the corresponding script poll the returned task id until `succeeded` or `failed`. Never start another create request merely because the status is `queued` or `running`. Polling uses exponential backoff and treats transient network/408/425/429/5xx errors as recoverable. If the process is interrupted or reaches its local timeout, keep the task file and use `--resume <id>` to continue polling the existing task.
+Image and video generation are long-running. Send exactly one create request with `async=true`, then let the corresponding script poll the returned task id until `succeeded` or `failed`. Never start another create request merely because the status is `queued` or `running`. Normal status checks use a fixed 30-second interval by default (override with `--poll-interval <seconds>`); successful checks do not increase that interval. A server-provided `retry_after`/`retryAfter` value takes precedence, while transient network/408/425/429/5xx errors use independent exponential backoff capped at 60 seconds. If the process is interrupted or reaches its local timeout, keep the task file and use `--resume <id>` to continue polling the existing task.
 
 The image and video scripts persist the task id and latest status in `<output>.task.json` (or the path supplied with `--task-file`) immediately after creation. Treat `TypeError: fetch failed`, connection resets, timeouts, and transient 4xx/5xx status responses during polling as recoverable; the scripts retry them with backoff while keeping the same task id. A create request whose response cannot be confirmed must not be blindly retried, because CUMOB may already have accepted it.
 
@@ -288,6 +288,7 @@ The scripts map common image generation options to either the Images API or Resp
 - `--response-model <model>` Responses model; defaults to Codex's configured model
 - `--image-api responses|images` overrides the provider's `image_api`
 - `--api-key-env <name>` API key environment variable name when Codex auth is unavailable; defaults to `OPENAI_API_KEY`
+- `--poll-interval <seconds>` status poll interval; defaults to `30` seconds. Successful checks keep this interval; transient errors use separate exponential backoff.
 - `--no-progress` disables progress messages on stderr while waiting for the API
 
 Images API mode accepts either `data[].b64_json` or `data[].url` responses. Responses mode reads `output[].type == image_generation_call`.
