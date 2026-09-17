@@ -4,13 +4,14 @@
 
 A media-generation Skill for Codex that uses the active Codex provider to call
 CUMOB-compatible image and video APIs. It supports image generation, editing,
-inpainting, restyling, and `minimax-h3` video generation.
+inpainting, restyling, and video generation with models including
+`minimax-h3-ref` and `minimax-h3-2k-ref`.
 
 The project includes dependency-free Node.js and Python scripts. They read
 Codex's `config.toml` and `auth.json` directly, so API keys do not need to be
 placed on the command line.
 
-Current version: `0.4.0`
+Current version: `0.5.0`
 
 ## Features
 
@@ -39,12 +40,12 @@ Current version: `0.4.0`
   `retry_after`/`retryAfter` values take precedence, while transient network
   errors and 408/425/429/5xx responses use independent exponential backoff up to
   60 seconds. Tasks can be resumed without creating a duplicate request.
-- Loads video model capabilities from `video-models.json`; duration limits are
-  resolved by model and resolution automatically. For example,
-  `agnes-video-v2.0-ref` supports 3-18 seconds at 480p/720p and 3-10 seconds
-  at 1080p, while `minimax-h3-ref` supports 10-15 seconds at fixed 768p.
-  Unsupported combinations are normalized to the nearest valid value with a
-  non-blocking notice instead of repeated confirmation.
+- Loads video model capabilities from `video-models.json`. `minimax-h3-ref`
+  supports 10-15 seconds at fixed 768p and accepts video references;
+  `minimax-h3-2k-ref` supports 10-15 seconds at fixed 1440p but does not accept
+  video references. CUMOB applies each fixed resolution by default, so the
+  request omits `resolution`. Safely adjustable range errors are normalized
+  with a notice, while unsupported video references fail before submission.
 - Preserves transparent PNG inputs and never modifies originals or mask files.
 - Supports synchronous/asynchronous video responses, polling, resume, and MP4
   downloads.
@@ -60,17 +61,47 @@ cumob-media-generation4codex/
 ├── README.en.md
 ├── LICENSE
 ├── VERSION
+├── video-models.json
+├── vendor-skills/
+│   ├── registry.json
+│   └── minimax/
+│       └── MiniMax-H3-main/    # Vendored official directory, unchanged
 ├── evals/
 │   └── evals.json
+├── tests/
+│   ├── test-video-models.mjs
+│   └── test-video-prompts.mjs
 └── scripts/
     ├── generate-image.mjs
     ├── generate-image.py
     ├── generate-video.mjs
-    └── generate-video.py
+    ├── generate-video.py
+    ├── validate-video-prompt.mjs
+    └── validate-video-prompt.py
 ```
 
-`SKILL.md` contains the instructions loaded by Codex. The scripts under
-`scripts/` provide Node.js and Python implementations for both media types.
+`SKILL.md` contains the instructions loaded by Codex. `video-models.json`
+defines video model capabilities. The scripts under `scripts/` provide Node.js
+and Python implementations for both media types.
+`vendor-skills/` stores unchanged snapshots of official vendor Skills. The
+MiniMax H3 directory is kept separate from the project Skill and is not edited
+by project scripts. `vendor-skills/registry.json` records each source, path, and
+file hash so the snapshot can be updated independently and checked for drift.
+
+### H3 prompt optimization and H3-Context-IR
+
+For video models mapped to an official prompt Skill, Codex first normalizes the
+model's effective duration, resolution, and reference limits, then reads the
+vendored Skill and uses the model running the current Codex task to write the
+final prompt. The default flow does not call the paid MiniMax H3-Context-IR or
+any other prompt-model API, and the video scripts never make such a request.
+
+Save structured prompts as UTF-8 text and pass them with `--prompt-file`. The
+scripts validate H3 field order, official media labels, timestamps, and model
+reference rules, and record prompt provenance and the selected official Skill in
+dry-run output, task state, and result summaries. H3-Context-IR is currently
+only an explicit external provenance label; a future adapter must be separately
+authenticated and opt-in.
 
 ## Requirements
 
@@ -177,7 +208,7 @@ export OPENAI_BASE_URL="https://example.com/v1"
 export OPENAI_MODEL="your-response-model"
 export OPENAI_IMAGE_MODEL="gpt-image-1"
 export OPENAI_IMAGE_API="responses"
-export OPENAI_VIDEO_MODEL="minimax-h3"
+export OPENAI_VIDEO_MODEL="minimax-h3-ref"
 export OPENAI_API_KEY="<your-api-key>"
 ```
 
@@ -321,12 +352,46 @@ node scripts/generate-video.mjs \
   --out outputs/cat.mp4
 ```
 
-For `minimax-h3`, `duration` is an integer from 10 through 15 and resolution is
-fixed at 768p. It accepts up to 9 images, 3 videos, and 3 audios, with a combined
-limit of 12 references. The script uses JSON for URL-only references and
-multipart for local media, placing video/audio references in `metadata.videos`
-and `metadata.audios`. Local video and audio files can be passed with `--video`
-and `--audio`; URL references use `--video-url` and `--audio-url`.
+For a structured prompt written by the current Codex model using the official
+H3 Skill, save the final text to a file first:
+
+```bash
+node scripts/validate-video-prompt.mjs \
+  --prompt-file outputs/cat.prompt.txt \
+  --video-model minimax-h3-ref \
+  --prompt-mode I2VA \
+  --prompt-source codex-current-model \
+  --duration 10 \
+  --image-count 1
+
+node scripts/generate-video.mjs \
+  --prompt-file outputs/cat.prompt.txt \
+  --prompt-mode I2VA \
+  --prompt-source codex-current-model \
+  --video-model minimax-h3-ref \
+  --image reference.png \
+  --duration 10 \
+  --out outputs/cat.mp4
+```
+
+These commands do not call H3-Context-IR. `codex-current-model` only records
+that the current Codex task wrote the final prompt using the official Skill.
+
+Both Minimax H3 ref models accept integer durations from 10 through 15, defaulting
+to 10. `minimax-h3-ref` is fixed at 768p and accepts up to 9 images, 3 videos,
+and 3 audios. `minimax-h3-2k-ref` is fixed at 1440p and accepts up to 9 images
+and 3 audios, but no video references. Both enforce a combined limit of 12
+references. Fixed resolutions are omitted from API requests but appear as the
+effective resolution in `--dry-run` and result summaries.
+
+The script uses JSON for URL-only references and multipart for local media.
+Image, video, and audio references use the top-level `images`, `videos`, and
+`audios` API fields; `metadata` is reserved for user-defined task context.
+Local video and audio files use `--video` and `--audio`, while URL references
+use `--video-url` and `--audio-url`. Both models also expose
+`--generate-audio true|false`, `--webhook <url>`, and `--metadata-json <json>`.
+The unsupported `negative_prompt`, `hd`, `first_frame`, and `last_frame`
+parameters are not exposed by the scripts.
 
 ## Troubleshooting
 
@@ -392,6 +457,7 @@ Syntax checks:
 ```bash
 node --check scripts/generate-image.mjs
 node --check scripts/generate-video.mjs
+node tests/test-video-models.mjs
 PYTHONPYCACHEPREFIX=/tmp/cumob-image-pycache \
   python3 -m py_compile scripts/generate-image.py
 PYTHONPYCACHEPREFIX=/tmp/cumob-video-pycache \

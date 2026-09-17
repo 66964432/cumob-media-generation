@@ -17,6 +17,8 @@ import urllib.request
 import uuid
 import json
 
+from video_prompt_validation import load_video_registry, validate_video_prompt
+
 
 RATIOS = {"16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "3:2", "2:3"}
 DEFAULT_POLL_INTERVAL_SECONDS = 30.0
@@ -80,7 +82,7 @@ def resolve_config(args):
     base_url = (args.base_url or provider.get("base_url") or env_value("OPENAI_BASE_URL") or "https://api.cumob.com/v1").rstrip("/")
     create_url = (args.video_create_url or provider.get("video_create_url") or f"{base_url}/videos").rstrip("/")
     status_url = (args.video_status_url or provider.get("video_status_url") or f"{base_url}/status").rstrip("/")
-    model = args.video_model or provider.get("video_model") or env_value("OPENAI_VIDEO_MODEL") or "minimax-h3"
+    model = args.video_model or provider.get("video_model") or env_value("OPENAI_VIDEO_MODEL") or "minimax-h3-ref"
     auth = json.loads(auth_path.read_text(encoding="utf-8")) if auth_path.exists() else {}
     api_key = auth.get("OPENAI_API_KEY") or env_value(key_env)
     if not api_key and not args.dry_run:
@@ -95,7 +97,13 @@ def task_state_path(args):
 def write_task_state(file_path, state):
     file_path.parent.mkdir(parents=True, exist_ok=True)
     temp = file_path.with_name(f"{file_path.name}.tmp-{os.getpid()}")
-    temp.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    existing = {}
+    if file_path.exists():
+        try:
+            existing = json.loads(file_path.read_text(encoding="utf-8"))
+        except Exception:
+            existing = {}
+    temp.write_text(json.dumps({**existing, **state}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     temp.replace(file_path)
 
 
@@ -182,13 +190,6 @@ def optimize_input_images(args):
     return temp_dir
 
 
-def validate_references(prompt, pattern, count, label):
-    for match in re.finditer(pattern, prompt):
-        index = int(match.group(1))
-        if index > count:
-            die(f"{match.group(0)} references {label} {index}, but only {count} were provided.")
-
-
 def load_video_capabilities(model):
     registry_path = Path(__file__).resolve().parent.parent / "video-models.json"
     try:
@@ -198,21 +199,43 @@ def load_video_capabilities(model):
         return {"duration": {"min": 4, "max": 20, "default": 10}, "aspect_ratios": sorted(RATIOS)}
 
 
+def supports_parameter(capabilities, name):
+    supported = capabilities.get("supported_parameters")
+    return not isinstance(supported, list) or name in supported
+
+
+def parse_metadata(value):
+    if value is None:
+        return None
+    try:
+        metadata = json.loads(value)
+    except Exception as error:
+        die(f"--metadata-json must be valid JSON: {error}")
+    if not isinstance(metadata, dict):
+        die("--metadata-json must contain a JSON object.")
+    return metadata
+
+
 def build_request(prompt, args, config):
     caps = load_video_capabilities(config["model"])
     requested_duration = args.duration
     duration = int(caps.get("duration", {}).get("default", 10) if requested_duration is None else requested_duration)
     adjustments = []
-    resolution = None if caps.get("fixed_resolution") else (args.resolution or caps.get("default_resolution"))
-    if resolution and resolution not in caps.get("resolutions", [resolution]):
-        replacement = caps.get("default_resolution") or caps.get("resolutions", [resolution])[0]
-        adjustments.append(f"resolution {resolution} is unsupported by {config['model']}; using {replacement}")
-        resolution = replacement
-    max_duration = min(int(caps.get("duration", {}).get("max", 20)), int(caps.get("resolution_duration_max", {}).get(resolution, 20)))
+    fixed_resolution = caps.get("fixed_resolution")
+    effective_resolution = fixed_resolution or args.resolution or caps.get("default_resolution")
+    if fixed_resolution and args.resolution and args.resolution != fixed_resolution:
+        adjustments.append(f"resolution {args.resolution} is unsupported by {config['model']}; using fixed resolution {fixed_resolution}")
+    elif effective_resolution and effective_resolution not in caps.get("resolutions", [effective_resolution]):
+        replacement = caps.get("default_resolution") or caps.get("resolutions", [effective_resolution])[0]
+        adjustments.append(f"resolution {effective_resolution} is unsupported by {config['model']}; using {replacement}")
+        effective_resolution = replacement
+    resolution = effective_resolution if not fixed_resolution or caps.get("send_resolution") is True else None
+    max_duration = min(int(caps.get("duration", {}).get("max", 20)), int(caps.get("resolution_duration_max", {}).get(effective_resolution, 20)))
     min_duration = int(caps.get("duration", {}).get("min", 4))
     if duration < min_duration or duration > max_duration:
         normalized = min(max_duration, max(min_duration, duration))
-        adjustments.append(f"duration {duration}s exceeds {config['model']} range {min_duration}-{max_duration}s; using {normalized}s")
+        resolution_context = f" {effective_resolution}" if effective_resolution else ""
+        adjustments.append(f"duration {duration}s exceeds {config['model']}{resolution_context} range {min_duration}-{max_duration}s; using {normalized}s")
         duration = normalized
     aspect_ratio = args.aspect_ratio
     ratios = caps.get("aspect_ratios", sorted(RATIOS))
@@ -222,20 +245,46 @@ def build_request(prompt, args, config):
     for message in adjustments:
         progress(args, f"Parameter adjusted: {message}.")
     args.parameter_adjustments = adjustments
+    args.effective_resolution = effective_resolution
     image_count = len(args.image_inputs)
-    if image_count > caps.get("max_images", 9):
-        die(f"{config['model']} accepts at most {caps.get('max_images', 9)} reference images.")
-    if len(args.video_inputs) > 3:
-        die(f"{config['model']} accepts at most {caps.get('max_videos', 3)} reference videos.")
-    if len(args.audio_inputs) > 3:
-        die(f"{config['model']} accepts at most {caps.get('max_audios', 3)} reference audios.")
-    if image_count + len(args.video_inputs) + len(args.audio_inputs) > 12:
+    video_count = len(args.video_inputs)
+    audio_count = len(args.audio_inputs)
+    max_images = int(caps.get("max_images", 9))
+    max_videos = int(caps.get("max_videos", 3))
+    max_audios = int(caps.get("max_audios", 3))
+    if image_count and not supports_parameter(caps, "images"):
+        die(f"{config['model']} does not support image references.")
+    if video_count and not supports_parameter(caps, "videos"):
+        die(f"{config['model']} does not support video references. Remove --video/--video-url or use a model that supports them, such as minimax-h3-ref.")
+    if audio_count and not supports_parameter(caps, "audios"):
+        die(f"{config['model']} does not support audio references.")
+    if image_count > max_images:
+        die(f"{config['model']} accepts at most {max_images} reference images.")
+    if video_count > max_videos:
+        if max_videos == 0:
+            die(f"{config['model']} does not support video references. Remove --video/--video-url or use minimax-h3-ref.")
+        die(f"{config['model']} accepts at most {max_videos} reference videos.")
+    if audio_count > max_audios:
+        die(f"{config['model']} accepts at most {max_audios} reference audios.")
+    if image_count + video_count + audio_count > int(caps.get("max_total_references", 12)):
         die(f"reference images, videos, and audios combined must not exceed {caps.get('max_total_references', 12)}.")
-    if len(prompt) > 2000:
-        progress(args, "Warning: prompt exceeds 2000 Chinese characters; CUMOB may lose instructions.")
-    validate_references(prompt, r"@图片([1-9])", image_count, "image")
-    validate_references(prompt, r"@视频([1-3])", len(args.video_inputs), "video")
-    validate_references(prompt, r"@音频([1-3])", len(args.audio_inputs), "audio")
+    prompt_source = args.prompt_source or "user"
+    if prompt_source not in {"user", "codex-current-model", "minimax-context-ir"}:
+        die("--prompt-source must be user, codex-current-model, or minimax-context-ir.")
+    try:
+        args.prompt_validation = validate_video_prompt(
+            prompt,
+            config["model"],
+            duration,
+            image_count,
+            video_count,
+            audio_count,
+            args.prompt_mode,
+            prompt_source,
+            load_video_registry(),
+        )
+    except ValueError as error:
+        die(str(error))
     body = {"model": config["model"], "prompt": prompt, "duration": duration, "async": True}
     if aspect_ratio:
         body["aspect_ratio"] = aspect_ratio
@@ -243,12 +292,22 @@ def build_request(prompt, args, config):
         body["resolution"] = resolution
     if args.image_url:
         body["images"] = args.image_url
-    if args.video or args.video_url or args.audio or args.audio_url:
-        body["metadata"] = {}
-        if args.video_inputs:
-            body["metadata"]["videos"] = [value if kind == "video-url" else Path(value).name for kind, value in args.video_inputs]
-        if args.audio_inputs:
-            body["metadata"]["audios"] = [value if kind == "audio-url" else Path(value).name for kind, value in args.audio_inputs]
+    if args.video_url:
+        body["videos"] = args.video_url
+    if args.audio_url:
+        body["audios"] = args.audio_url
+    if args.generate_audio is not None:
+        if not supports_parameter(caps, "generate_audio"):
+            die(f"{config['model']} does not support --generate-audio.")
+        body["generate_audio"] = args.generate_audio == "true"
+    if args.webhook:
+        if not supports_parameter(caps, "webhook"):
+            die(f"{config['model']} does not support --webhook.")
+        body["webhook"] = args.webhook
+    if args.metadata_json is not None:
+        if not supports_parameter(caps, "metadata"):
+            die(f"{config['model']} does not support --metadata-json.")
+        body["metadata"] = parse_metadata(args.metadata_json)
     return body
 
 
@@ -296,7 +355,7 @@ def encode_multipart(body, args):
         line(path.read_bytes())
 
     for key, value in body.items():
-        if key != "images":
+        if key not in {"images", "videos", "audios"}:
             if isinstance(value, (dict, list)):
                 encoded = json.dumps(value, ensure_ascii=False)
             elif value is True:
@@ -309,9 +368,9 @@ def encode_multipart(body, args):
     for kind, value in args.image_inputs:
         field("images", value) if kind == "image-url" else file_field("images", value)
     for kind, value in args.video_inputs:
-        if kind == "video": file_field("videos", value)
+        field("videos", value) if kind == "video-url" else file_field("videos", value)
     for kind, value in args.audio_inputs:
-        if kind == "audio": file_field("audios", value)
+        field("audios", value) if kind == "audio-url" else file_field("audios", value)
     line(f"--{boundary}--")
     return f"multipart/form-data; boundary={boundary}", b"".join(chunks)
 
@@ -437,6 +496,8 @@ def parse_args():
     parser.add_argument("--video-status-url")
     parser.add_argument("--video-model")
     parser.add_argument("--api-key-env")
+    parser.add_argument("--prompt-mode", choices=["T2VA", "I2VA", "FL2VA", "L2VA", "Ref2VA"])
+    parser.add_argument("--prompt-source", choices=["user", "codex-current-model", "minimax-context-ir"], default="user")
     parser.add_argument("--duration", type=int)
     parser.add_argument("--aspect-ratio")
     parser.add_argument("--resolution")
@@ -446,6 +507,9 @@ def parse_args():
     parser.add_argument("--audio", action="append", default=[])
     parser.add_argument("--video-url", action="append", default=[])
     parser.add_argument("--audio-url", action="append", default=[])
+    parser.add_argument("--generate-audio", choices=["true", "false"])
+    parser.add_argument("--webhook")
+    parser.add_argument("--metadata-json")
     parser.add_argument("--max-input-dimension", type=int, default=1536)
     parser.add_argument("--input-jpeg-quality", type=int, default=85)
     parser.add_argument("--input-optimize-threshold-mb", type=float, default=4)
@@ -486,14 +550,15 @@ def main():
         resume_state = read_task_state(resume_path.resolve()) if resume_path.exists() else read_task_state(state_file)
     resume_id = (resume_state or {}).get("id") or args.resume
     temp_dir = None if resume_id else optimize_input_images(args)
-    body = None if resume_id else build_request(prompt, args, config)
     try:
+        body = None if resume_id else build_request(prompt, args, config)
         if args.dry_run:
             redacted = dict(body) if body else None
             if redacted:
                 redacted["multipart_files"] = {"images": args.image, "videos": args.video, "audios": args.audio}
                 redacted["input_optimization"] = args.input_optimization
-            print(json.dumps({"provider": config["provider_name"], "base_url": config["base_url"], "create_endpoint": config["create_url"], "status_endpoint": f"{config['status_url']}/{{id}}", "video_model": config["model"], "transport": "multipart/form-data" if (args.image or args.video or args.audio) else "application/json", "has_api_key": config["has_api_key"], "api_key_source": config["api_key_source"], "request": redacted, "parameter_adjustments": getattr(args, "parameter_adjustments", []), "resume_id": resume_id, "task_file": str(state_file), "output": args.out}, ensure_ascii=False, indent=2))
+            caps = load_video_capabilities(config["model"])
+            print(json.dumps({"provider": config["provider_name"], "base_url": config["base_url"], "create_endpoint": config["create_url"], "status_endpoint": f"{config['status_url']}/{{id}}", "video_model": config["model"], "transport": "multipart/form-data" if (args.image or args.video or args.audio) else "application/json", "has_api_key": config["has_api_key"], "api_key_source": config["api_key_source"], "request": redacted, "effective_resolution": getattr(args, "effective_resolution", None) or caps.get("fixed_resolution") or (body or {}).get("resolution"), "resolution_sent": bool(body and "resolution" in body), "parameter_adjustments": getattr(args, "parameter_adjustments", []), "prompt_validation": getattr(args, "prompt_validation", None), "prompt_file": str(Path(args.prompt_file).resolve()) if args.prompt_file else None, "resume_id": resume_id, "task_file": str(state_file), "output": args.out}, ensure_ascii=False, indent=2))
             return
         if resume_id:
             progress(args, f"Resuming existing video task {resume_id}; no create request will be sent.")
@@ -513,11 +578,15 @@ def main():
         task_id = task.get("id") or resume_id
         if not task_id:
             die("video API response did not contain an id.")
-        write_task_state(state_file, {"id": task_id, "status": task.get("status"), "progress": task.get("progress"), "created": task.get("created"), "model": task.get("model", config["model"]), "output": args.out, "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
-        completed = task if str(task.get("status", "")).lower() == "succeeded" and video_url_of(task) else wait_for_video(task_id, args, config, task, state_file)
+        write_task_state(state_file, {"id": task_id, "status": task.get("status"), "progress": task.get("progress"), "created": task.get("created"), "model": task.get("model", config["model"]), "output": args.out, "prompt_file": str(Path(args.prompt_file).resolve()) if args.prompt_file else None, "prompt_validation": getattr(args, "prompt_validation", None), "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
+        if str(task.get("status", "")).lower() == "succeeded" and video_url_of(task):
+            completed = {**task, "video_url": video_url_of(task)}
+        else:
+            completed = wait_for_video(task_id, args, config, task, state_file)
         progress(args, "Video is ready. Downloading content.")
         written = download_video(completed["video_url"], args.out, config)
-        summary = {"id": task_id, "status": completed.get("status"), "provider": config["provider_name"], "model": completed.get("model", config["model"]), "requested_duration": args.duration, "duration": completed.get("duration", body.get("duration") if body else None), "aspect_ratio": completed.get("aspect_ratio", body.get("aspect_ratio") if body else None), "resolution": completed.get("resolution", body.get("resolution") if body else "768p"), "parameter_adjustments": getattr(args, "parameter_adjustments", []), "video_url": completed["video_url"], "output": written}
+        caps = load_video_capabilities(config["model"])
+        summary = {"id": task_id, "status": completed.get("status"), "provider": config["provider_name"], "model": completed.get("model", config["model"]), "requested_duration": args.duration, "duration": completed.get("duration", body.get("duration") if body else None), "aspect_ratio": completed.get("aspect_ratio", body.get("aspect_ratio") if body else None), "resolution": completed.get("resolution") or getattr(args, "effective_resolution", None) or caps.get("fixed_resolution") or (body or {}).get("resolution"), "parameter_adjustments": getattr(args, "parameter_adjustments", []), "prompt_file": str(Path(args.prompt_file).resolve()) if args.prompt_file else None, "prompt_validation": getattr(args, "prompt_validation", None), "video_url": completed["video_url"], "output": written}
         print(json.dumps(summary, ensure_ascii=False, indent=2) if args.json else f"Wrote {written}")
     finally:
         if temp_dir is not None:

@@ -12,7 +12,51 @@ Use this skill to create or edit images through the active Codex provider. The b
 
 For CUMOB, configure `base_url = "https://api.cumob.com/v1"`, `image_api = "images"`, and `image_model = "gpt-image-2-ref"`.
 
-For CUMOB video generation, use the bundled `scripts/generate-video.mjs` (or its Python fallback). Configure `video_api = "videos"` and `video_model` to the desired default. The script calls `<base_url>/videos` with `async=true` and polls `<base_url>/status/{id}`. Video model capabilities are loaded from `video-models.json`; duration and resolution are normalized automatically per model (for example, `agnes-video-v2.0-ref` supports 480p/720p up to 18s and 1080p up to 10s, while `minimax-h3-ref` supports 10-15s at fixed 768p). If a requested combination is unsupported, use the nearest valid value and print a non-blocking adjustment notice; do not ask for repeated confirmation. Video requests use model-supported `aspect_ratio`, `images`, and `metadata.videos`/`metadata.audios` fields; local reference media use multipart upload, while URL-only references use JSON when possible.
+For CUMOB video generation, use the bundled `scripts/generate-video.mjs` (or its Python fallback). Configure `video_api = "videos"` and `video_model` to the desired default. The script calls `<base_url>/videos` with `async=true` and polls `<base_url>/status/{id}`. Video model capabilities are loaded from `video-models.json`; duration, fixed resolution, supported fields, and reference limits are enforced per model. `minimax-h3-ref` accepts 10-15 seconds, uses fixed 768p, and supports video references. `minimax-h3-2k-ref` accepts 10-15 seconds, uses fixed 1440p, and rejects video references before submission. Fixed resolutions are not sent because CUMOB applies the model default. Image, video, and audio references use the top-level `images`, `videos`, and `audios` fields; `metadata` is reserved for user-defined task context. Local reference media use multipart upload, while URL-only references use JSON.
+
+## Vendor Prompt Skills
+
+Some video models are mapped to an official vendor prompt-writing Skill in
+`video-models.json`. The original vendor files are vendored under
+`vendor-skills/` and must remain unchanged. The registry records their source,
+path, supported modes, and integrity hashes; project-specific orchestration
+belongs in this Skill and in the validation scripts.
+
+For a model mapped to an official prompt Skill, follow this order:
+
+1. Resolve the selected model and its effective CUMOB capabilities first,
+   including normalized duration, fixed resolution, and reference limits.
+2. Use the model running the current Codex task to optimize the user's request
+   according to the mapped vendor Skill. For MiniMax H3, read the vendored
+   `h3-prompt-writing/SKILL.md` and the relevant `references/base-en.txt` or
+   `references/ref-en.txt`.
+3. Do not call H3-Context-IR or any other external prompt-enhancement API by
+   default. `generate-video.mjs` and `generate-video.py` never make a prompt
+   model request; they only validate and submit the final prompt.
+4. Choose T2VA, I2VA, FL2VA, L2VA, or Ref2VA from the user's intent. One image
+   does not automatically imply I2VA; use Ref2VA when the media is reference
+   material rather than an explicit keyframe.
+5. Write the optimized prompt to a UTF-8 `.prompt.txt` file and pass it with
+   `--prompt-file`. Do not truncate a structured H3 prompt.
+6. Run `scripts/validate-video-prompt.mjs` (or its Python fallback), or rely on
+   the video script's built-in validation, before submitting the API request.
+7. Preserve the vendor's official labels (`<Picture N>`, `<Video N>`,
+   `<Audio N>`, `<Subject N>`) in an H3 prompt. Legacy `@图片N`, `@视频N`, and
+   `@音频N` remain supported for ordinary prompts, but the two label systems
+   must not be mixed in one prompt.
+
+For prompts optimized in this Codex workflow, pass `--prompt-source
+codex-current-model`. A direct CLI prompt defaults to `user` provenance.
+`--prompt-source minimax-context-ir` only records that a prompt was prepared
+elsewhere; it does not call that paid service. Use it only when the user
+explicitly supplied or requested an externally prepared prompt. A future
+Context-IR adapter, if added, must be explicit, separately authenticated, and
+opt-in; it must never be an automatic fallback.
+
+For H3, CUMOB model capabilities take precedence over the vendor's general
+prompt guide. Normalize a requested duration to the model's effective range
+before writing timestamps. `first_frame` and `last_frame` may be expressed as
+prompt semantics, but they are not CUMOB API fields for the current H3 models.
 
 For CUMOB image generation/editing, use `image_api = "images"`. The bundled Images API path sends `async=true` for both JSON generation and multipart edits, then polls `<base_url>/status/{id}` until the task succeeds. It accepts synchronous final responses as a compatibility fallback. `--resume` and `<output>.task.json` can resume an image task without creating a duplicate.
 
@@ -38,7 +82,7 @@ Use Codex's API configuration by default:
 - Use provider `base_url` as the API URL.
 - Use provider `image_api` to select `images` or `responses`; default to `responses` for backward compatibility.
 - Use provider `image_model` as the image model unless `--image-model` overrides it.
-- Use provider `video_model` as the video model unless `--video-model` overrides it; the video script defaults to `minimax-h3`.
+- Use provider `video_model` as the video model unless `--video-model` overrides it; the video script defaults to `minimax-h3-ref`.
 - Use the top-level `model` as the Responses model unless the user explicitly asks for another model.
 - Read `OPENAI_API_KEY` from the matching `auth.json`.
 - Do not ask the user for an API key when Codex config is available.
@@ -172,7 +216,7 @@ If neither Node nor Python is available, stop and tell the user one local runtim
 
 ## Common Commands
 
-Generate a video with CUMOB `minimax-h3`:
+Generate a video with CUMOB `minimax-h3-ref`:
 
 ```bash
 node <skill-dir>/scripts/generate-video.mjs \
@@ -193,7 +237,7 @@ node <skill-dir>/scripts/generate-video.mjs \
   --out outputs/remix.mp4
 ```
 
-For `minimax-h3`, `duration` must be an integer from 10 through 15 (default 10), and the total number of image, video, and audio references must not exceed 12.
+For both Minimax H3 ref models, `duration` must be an integer from 10 through 15 (default 10), images must not exceed 9, audios must not exceed 3, and total image/video/audio references must not exceed 12. `minimax-h3-ref` additionally accepts up to 3 videos; `minimax-h3-2k-ref` accepts no video references. Do not send `negative_prompt`, `hd`, `first_frame`, or `last_frame` to either model.
 
 Generate a new image:
 
@@ -295,7 +339,7 @@ Images API mode accepts either `data[].b64_json` or `data[].url` responses. Resp
 
 When using the CUMOB Images API, requests include `async=true` by default. Use `--resume <id>` or `--resume <task-file>` after an interrupted image task; no second create request is sent.
 
-Video options are exposed by `scripts/generate-video.mjs`: `--video-model`, `--duration`, `--aspect-ratio`, `--image`, `--image-url`, `--video`, `--video-url`, `--audio`, `--audio-url`, `--poll-interval`, `--timeout`, `--resume`, and `--task-file`. The video script does not accept `metadata-json`, `resolution`, or `size` for `minimax-h3`.
+Video options are exposed by `scripts/generate-video.mjs`: `--video-model`, `--prompt`, `--prompt-file`, `--prompt-mode`, `--prompt-source`, `--duration`, `--aspect-ratio`, `--resolution`, `--image`, `--image-url`, `--video`, `--video-url`, `--audio`, `--audio-url`, `--generate-audio`, `--webhook`, `--metadata-json`, `--poll-interval`, `--timeout`, `--resume`, and `--task-file`. A requested resolution is validated against the selected model; fixed-resolution Minimax models omit it from the API request and report the effective resolution in `--dry-run` and result summaries. The dry-run output and task/summary metadata include prompt validation, selected vendor Skill, and prompt provenance.
 
 ## Quality Guidance
 

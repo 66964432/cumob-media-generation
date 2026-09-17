@@ -23,8 +23,8 @@
     },
     {
       "id": 4,
-      "prompt": "生成一段 10 秒、16:9 的 minimax-h3 视频，保存到 outputs/demo.mp4。",
-      "expected_output": "The agent routes the request to generate-video, sends one POST to /v1/videos with model minimax-h3, duration 10, and aspect_ratio 16:9, then polls /v1/status/{id} and saves the returned video_url as an MP4.",
+      "prompt": "生成一段 10 秒、16:9 的 minimax-h3-ref 视频，保存到 outputs/demo.mp4。",
+      "expected_output": "The agent routes the request to generate-video, sends one POST to /v1/videos with model minimax-h3-ref, duration 10, and aspect_ratio 16:9, omits the fixed resolution, then polls /v1/status/{id} and saves the returned video_url as an MP4.",
       "files": []
     },
     {
@@ -37,7 +37,7 @@
     },
     {
       "id": 6,
-      "prompt": "检查 minimax-h3 视频请求配置，不实际调用接口。",
+      "prompt": "检查 minimax-h3-ref 视频请求配置，不实际调用接口。",
       "expected_output": "The agent uses generate-video --dry-run and reports the redacted create/status endpoints, video model, duration/aspect ratio, and reference counts without exposing credentials or base64 contents.",
       "files": []
     },
@@ -58,6 +58,37 @@
       "prompt": "图片任务创建后本地进程中断，请使用已有任务 ID 恢复，不要重新创建任务。",
       "expected_output": "The agent uses generate-image --resume, sends no second POST, polls the existing task, and writes the completed image.",
       "files": []
+    },
+    {
+      "id": 10,
+      "prompt": "使用 minimax-h3-2k-ref 生成 12 秒视频，带两张参考图片和一段参考音频，不实际调用接口。",
+      "expected_output": "The agent uses generate-video --dry-run with minimax-h3-2k-ref, reports effective resolution 1440p without sending resolution, accepts the image/audio references, and emits top-level images/audios fields.",
+      "files": []
+    },
+    {
+      "id": 11,
+      "prompt": "使用 minimax-h3-2k-ref，并把 motion.mp4 作为参考视频生成视频。",
+      "expected_output": "The agent rejects the request before API submission because minimax-h3-2k-ref does not support video references, and suggests removing the video reference or using minimax-h3-ref.",
+      "files": [
+        "motion.mp4"
+      ]
+    },
+    {
+      "id": 12,
+      "prompt": "使用 minimax-h3-ref 和我给的一张首帧图片生成 10 秒视频。请优化提示词，但不要调用付费的 H3-Context-IR。",
+      "expected_output": "The agent resolves the effective 10-second H3 model settings first, reads the vendored official h3-prompt-writing Skill, uses the current Codex model to create an I2VA three-field prompt, saves it as a prompt file, validates it, and invokes generate-video with --prompt-source codex-current-model. It does not call H3-Context-IR or another prompt model API.",
+      "files": [
+        "first-frame.png"
+      ]
+    },
+    {
+      "id": 13,
+      "prompt": "使用 minimax-h3-2k-ref，把一张人物图和一段音频作为综合参考生成 12 秒视频。",
+      "expected_output": "The agent selects Ref2VA from intent, uses the current Codex model plus the official H3 prompt Skill to produce the six-section prompt with <Picture 1> and <Audio 1>, validates the labels and 12-second timeline, and submits no video references and no external prompt-enhancement request.",
+      "files": [
+        "person.png",
+        "voice.mp3"
+      ]
     }
   ]
 }

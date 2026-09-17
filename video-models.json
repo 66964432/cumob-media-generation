@@ -1,11 +1,47 @@
 {
   "default_model": "minimax-h3-ref",
+  "prompt_skills": {
+    "minimax-h3-official": {
+      "vendor": "minimax",
+      "name": "h3-prompt-writing",
+      "path": "vendor-skills/minimax/MiniMax-H3-main/skills/h3-prompt-writing",
+      "source_root": "vendor-skills/minimax/MiniMax-H3-main",
+      "modes": ["T2VA", "I2VA", "FL2VA", "L2VA", "Ref2VA"],
+      "optimizer": "codex-current-model",
+      "external_prompt_api": false,
+      "immutable": true
+    }
+  },
   "models": {
     "minimax-h3-ref": {
+      "vendor": "minimax",
+      "prompt_skill": "minimax-h3-official",
       "duration": { "min": 10, "max": 15, "default": 10 },
       "fixed_resolution": "768p",
+      "send_resolution": false,
       "resolutions": ["768p"],
-      "aspect_ratios": ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "3:2", "2:3"]
+      "aspect_ratios": ["16:9", "9:16", "1:1", "21:9", "3:2", "2:3"],
+      "supported_parameters": ["model", "prompt", "duration", "aspect_ratio", "resolution", "images", "videos", "audios", "generate_audio", "webhook", "metadata", "async"],
+      "unsupported_parameters": ["negative_prompt", "hd", "first_frame", "last_frame"],
+      "max_images": 9,
+      "max_videos": 3,
+      "max_audios": 3,
+      "max_total_references": 12
+    },
+    "minimax-h3-2k-ref": {
+      "vendor": "minimax",
+      "prompt_skill": "minimax-h3-official",
+      "duration": { "min": 10, "max": 15, "default": 10 },
+      "fixed_resolution": "1440p",
+      "send_resolution": false,
+      "resolutions": ["1440p"],
+      "aspect_ratios": ["16:9", "9:16", "1:1", "21:9", "3:2", "2:3"],
+      "supported_parameters": ["model", "prompt", "duration", "aspect_ratio", "resolution", "images", "audios", "generate_audio", "webhook", "metadata", "async"],
+      "unsupported_parameters": ["negative_prompt", "hd", "first_frame", "last_frame", "videos"],
+      "max_images": 9,
+      "max_videos": 0,
+      "max_audios": 3,
+      "max_total_references": 12
     },
     "agnes-video-v2.0-ref": {
       "duration": { "min": 3, "max": 18, "default": 10 },

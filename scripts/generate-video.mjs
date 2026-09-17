@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import { spawnSync } from "node:child_process";
+import { loadVideoRegistry, validateVideoPrompt } from "./video-prompt-validation.mjs";
 
 const DEFAULT_POLL_INTERVAL_SECONDS = 30;
 
@@ -13,7 +14,8 @@ Usage:
   node scripts/generate-video.mjs --prompt "..." --out outputs/video.mp4 [options]
 
 Required (unless --resume is used):
-  --prompt <text>             Video prompt (recommended <= 2000 Chinese characters).
+  --prompt <text>             Video prompt. Use --prompt-file for structured H3 prompts.
+  --prompt-file <path>        Read the final prompt from a UTF-8 text file.
 
 Output:
   --out <path>                Output MP4 path. Default: generated.mp4
@@ -23,19 +25,24 @@ Codex/CUMOB config:
   --base-url <url>            Provider base URL, normally https://api.cumob.com/v1
   --video-create-url <url>    Override the create endpoint.
   --video-status-url <url>    Override the status endpoint base (without /{id}).
-  --video-model <model>       Defaults to provider video_model or minimax-h3.
+  --video-model <model>       Defaults to provider video_model or minimax-h3-ref.
   --api-key-env <name>        Environment fallback for the API key.
+  --prompt-mode <mode>        T2VA, I2VA, FL2VA, L2VA, or Ref2VA.
+  --prompt-source <source>    Prompt provenance: user, codex-current-model, or minimax-context-ir.
 
-Video options (minimax-h3):
+Video options:
   --duration <seconds>        Integer seconds (normalized to the selected model's capabilities).
   --aspect-ratio <ratio>      Requested output aspect ratio.
-  --resolution <value>        Requested resolution when supported by the model.
+  --resolution <value>        Requested resolution. Fixed-resolution models omit it from the request.
   --image <path>              Local reference image; can be repeated (max 9).
   --image-url <url>           Public reference image URL; can be repeated (max 9).
   --video <path>              Local reference video; can be repeated (max 3).
   --audio <path>              Local reference audio; can be repeated (max 3).
   --video-url <url>           Public reference video URL; can be repeated (max 3).
   --audio-url <url>           Public reference audio URL; can be repeated (max 3).
+  --generate-audio <boolean>  Request generated audio when supported (true or false).
+  --webhook <url>             Optional task completion webhook.
+  --metadata-json <json>      Optional JSON object containing task metadata.
   --resume <id>               Resume polling an existing CUMOB task; does not create a new task.
   --task-file <path>          Persist task id/status for recovery. Default: <out>.task.json.
 
@@ -67,6 +74,12 @@ function parseArgs(argv) {
   const args = { image: [], "image-url": [], video: [], audio: [], "video-url": [], "audio-url": [], imageInputs: [], videoInputs: [], audioInputs: [] };
   const flags = new Set(["help", "dry-run", "json", "no-progress", "no-input-optimization"]);
   const repeated = new Set(["image", "image-url", "video", "audio", "video-url", "audio-url"]);
+  const valued = new Set([
+    "prompt", "prompt-file", "out", "codex-home", "base-url", "video-create-url", "video-status-url",
+    "video-model", "api-key-env", "duration", "aspect-ratio", "resolution", "generate-audio", "webhook",
+    "metadata-json", "prompt-mode", "prompt-source", "resume", "task-file", "poll-interval", "timeout", "max-input-dimension",
+    "input-jpeg-quality", "input-optimize-threshold-mb",
+  ]);
   for (let i = 0; i < argv.length; i += 1) {
     const token = argv[i];
     if (!token.startsWith("--")) die(`unexpected argument: ${token}`);
@@ -76,6 +89,7 @@ function parseArgs(argv) {
       args[key] = true;
       continue;
     }
+    if (!repeated.has(key) && !valued.has(key)) die(`unsupported option: --${key}`);
     const value = argv[i + 1];
     if (!value || value.startsWith("--")) die(`missing value for --${key}`);
     i += 1;
@@ -103,7 +117,11 @@ function taskStatePath(args, outputPath) {
 function writeTaskState(filePath, state) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const temp = `${filePath}.tmp-${process.pid}`;
-  fs.writeFileSync(temp, `${JSON.stringify(state, null, 2)}\n`);
+  let existing = {};
+  if (fs.existsSync(filePath)) {
+    try { existing = JSON.parse(fs.readFileSync(filePath, "utf8")); } catch { existing = {}; }
+  }
+  fs.writeFileSync(temp, `${JSON.stringify({ ...existing, ...state }, null, 2)}\n`);
   fs.renameSync(temp, filePath);
 }
 
@@ -172,7 +190,7 @@ function resolveConfig(args) {
   const baseUrl = (args["base-url"] || provider.base_url || envValue("OPENAI_BASE_URL") || "https://api.cumob.com/v1").replace(/\/+$/, "");
   const createUrl = (args["video-create-url"] || provider.video_create_url || `${baseUrl}/videos`).replace(/\/+$/, "");
   const statusUrl = (args["video-status-url"] || provider.video_status_url || `${baseUrl}/status`).replace(/\/+$/, "");
-  const model = args["video-model"] || provider.video_model || envValue("OPENAI_VIDEO_MODEL") || "minimax-h3";
+  const model = args["video-model"] || provider.video_model || envValue("OPENAI_VIDEO_MODEL") || "minimax-h3-ref";
   const auth = readJsonIfExists(authPath);
   const apiKey = auth.OPENAI_API_KEY || envValue(keyEnv);
   if (!apiKey && !args["dry-run"]) die(`no API key found in ${authPath} or environment variable ${keyEnv}.`);
@@ -204,20 +222,22 @@ function normalizeVideoParameters(args, config) {
   const adjustments = [];
   const minDuration = Number(capabilities.duration?.min ?? 4);
   let maxDuration = Number(capabilities.duration?.max ?? 20);
-  let resolution = args.resolution;
-  if (capabilities.fixed_resolution) resolution = undefined;
-  else if (!resolution && capabilities.default_resolution) resolution = capabilities.default_resolution;
-  if (resolution && Array.isArray(capabilities.resolutions) && !capabilities.resolutions.includes(resolution)) {
+  let effectiveResolution = capabilities.fixed_resolution || args.resolution || capabilities.default_resolution;
+  if (capabilities.fixed_resolution && args.resolution && args.resolution !== capabilities.fixed_resolution) {
+    adjustments.push(`resolution ${args.resolution} is unsupported by ${config.model}; using fixed resolution ${capabilities.fixed_resolution}`);
+  } else if (effectiveResolution && Array.isArray(capabilities.resolutions) && !capabilities.resolutions.includes(effectiveResolution)) {
     const fallback = capabilities.default_resolution || capabilities.resolutions[0];
-    adjustments.push(`resolution ${resolution} is unsupported by ${config.model}; using ${fallback}`);
-    resolution = fallback;
+    adjustments.push(`resolution ${effectiveResolution} is unsupported by ${config.model}; using ${fallback}`);
+    effectiveResolution = fallback;
   }
-  if (resolution && capabilities.resolution_duration_max?.[resolution] !== undefined) {
-    maxDuration = Math.min(maxDuration, Number(capabilities.resolution_duration_max[resolution]));
+  const sendResolution = capabilities.fixed_resolution ? capabilities.send_resolution === true : Boolean(effectiveResolution);
+  const resolution = sendResolution ? effectiveResolution : undefined;
+  if (effectiveResolution && capabilities.resolution_duration_max?.[effectiveResolution] !== undefined) {
+    maxDuration = Math.min(maxDuration, Number(capabilities.resolution_duration_max[effectiveResolution]));
   }
   if (!Number.isInteger(duration) || duration < minDuration || duration > maxDuration) {
     const normalized = Math.min(maxDuration, Math.max(minDuration, Number.isFinite(duration) ? Math.round(duration) : minDuration));
-    adjustments.push(`duration ${args.duration ?? "default"} is outside ${config.model}${resolution ? ` ${resolution}` : ""} range ${minDuration}-${maxDuration}s; using ${normalized}s`);
+    adjustments.push(`duration ${args.duration ?? "default"} is outside ${config.model}${effectiveResolution ? ` ${effectiveResolution}` : ""} range ${minDuration}-${maxDuration}s; using ${normalized}s`);
     duration = normalized;
   }
   const ratios = Array.isArray(capabilities.aspect_ratios) && capabilities.aspect_ratios.length ? capabilities.aspect_ratios : [...RATIOS];
@@ -228,7 +248,27 @@ function normalizeVideoParameters(args, config) {
   }
   if (adjustments.length) adjustments.forEach((message) => progress(args, `Parameter adjusted: ${message}.`));
   args.parameterAdjustments = adjustments;
-  return { capabilities, duration, aspectRatio, resolution };
+  args.effectiveResolution = effectiveResolution;
+  return { capabilities, duration, aspectRatio, resolution, effectiveResolution };
+}
+
+function supportsParameter(capabilities, name) {
+  return !Array.isArray(capabilities.supported_parameters) || capabilities.supported_parameters.includes(name);
+}
+
+function parseBoolean(value, option) {
+  if (value === undefined) return undefined;
+  if (value === "true") return true;
+  if (value === "false") return false;
+  die(`${option} must be true or false.`);
+}
+
+function parseMetadata(value) {
+  if (value === undefined) return undefined;
+  let metadata;
+  try { metadata = JSON.parse(value); } catch (error) { die(`--metadata-json must be valid JSON: ${error.message}`); }
+  if (!metadata || Array.isArray(metadata) || typeof metadata !== "object") die("--metadata-json must contain a JSON object.");
+  return metadata;
 }
 
 async function readPrompt(args) {
@@ -245,10 +285,20 @@ async function readPrompt(args) {
 
 function mimeTypeFor(filePath) {
   const ext = path.extname(filePath).toLowerCase();
-  if ([".jpg", ".jpeg"].includes(ext)) return "image/jpeg";
-  if (ext === ".webp") return "image/webp";
-  if (ext === ".gif") return "image/gif";
-  return "image/png";
+  return ({
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+    ".mp4": "video/mp4",
+    ".mov": "video/quicktime",
+    ".webm": "video/webm",
+    ".mp3": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".m4a": "audio/mp4",
+    ".aac": "audio/aac",
+  })[ext] || "application/octet-stream";
 }
 
 function formatBytes(bytes) {
@@ -308,37 +358,64 @@ function optimizeInputImages(args) {
   return cleanup;
 }
 
-function validateReferences(prompt, pattern, count, label) {
-  for (const match of prompt.matchAll(pattern)) {
-    const index = Number(match[1]);
-    if (index > count) die(`${match[0]} references ${label} ${index}, but only ${count} were provided.`);
-  }
-}
-
 function buildRequest(prompt, args, config) {
   const normalized = normalizeVideoParameters(args, config);
   const { duration, aspectRatio, resolution } = normalized;
   const caps = normalized.capabilities;
-  if (args.imageInputs.length > Number(caps.max_images ?? 9)) die(`${config.model} accepts at most ${caps.max_images ?? 9} reference images.`);
-  if (args.video.length + args["video-url"].length > Number(caps.max_videos ?? 3)) die(`${config.model} accepts at most ${caps.max_videos ?? 3} reference videos.`);
-  if (args.audio.length + args["audio-url"].length > Number(caps.max_audios ?? 3)) die(`${config.model} accepts at most ${caps.max_audios ?? 3} reference audios.`);
   const imageCount = args.imageInputs.length;
-  const total = imageCount + args.video.length + args["video-url"].length + args.audio.length + args["audio-url"].length;
+  const videoCount = args.videoInputs.length;
+  const audioCount = args.audioInputs.length;
+  const maxImages = Number(caps.max_images ?? 9);
+  const maxVideos = Number(caps.max_videos ?? 3);
+  const maxAudios = Number(caps.max_audios ?? 3);
+  if (imageCount && !supportsParameter(caps, "images")) die(`${config.model} does not support image references.`);
+  if (videoCount && !supportsParameter(caps, "videos")) die(`${config.model} does not support video references. Remove --video/--video-url or use a model that supports them, such as minimax-h3-ref.`);
+  if (audioCount && !supportsParameter(caps, "audios")) die(`${config.model} does not support audio references.`);
+  if (imageCount > maxImages) die(`${config.model} accepts at most ${maxImages} reference images.`);
+  if (videoCount > maxVideos) {
+    if (maxVideos === 0) die(`${config.model} does not support video references. Remove --video/--video-url or use minimax-h3-ref.`);
+    die(`${config.model} accepts at most ${maxVideos} reference videos.`);
+  }
+  if (audioCount > maxAudios) die(`${config.model} accepts at most ${maxAudios} reference audios.`);
+  const total = imageCount + videoCount + audioCount;
   if (total > Number(caps.max_total_references ?? 12)) die(`reference images, videos, and audios combined must not exceed ${caps.max_total_references ?? 12}.`);
-  if ([...prompt].length > 2000) progress(args, "Warning: prompt exceeds 2000 Chinese characters; CUMOB may lose instructions.");
-  validateReferences(prompt, /@图片([1-9])/g, imageCount, "image");
-  validateReferences(prompt, /@视频([1-3])/g, args.video.length + args["video-url"].length, "video");
-  validateReferences(prompt, /@音频([1-3])/g, args.audio.length + args["audio-url"].length, "audio");
+  const promptSource = args["prompt-source"] || "user";
+  if (!["user", "codex-current-model", "minimax-context-ir"].includes(promptSource)) {
+    die("--prompt-source must be user, codex-current-model, or minimax-context-ir.");
+  }
+  try {
+    args.promptValidation = validateVideoPrompt({
+      prompt,
+      model: config.model,
+      duration,
+      imageCount,
+      videoCount,
+      audioCount,
+      promptMode: args["prompt-mode"],
+      promptSource,
+      registry: loadVideoRegistry(),
+    });
+  } catch (error) {
+    die(error.message || String(error));
+  }
 
   const body = { model: config.model, prompt, duration, async: true };
   if (aspectRatio) body.aspect_ratio = aspectRatio;
   if (resolution) body.resolution = resolution;
-  const images = args["image-url"];
-  if (images.length) body.images = images;
-  if (args.video.length + args["video-url"].length || args.audio.length + args["audio-url"].length) {
-    body.metadata = {};
-    if (args.videoInputs.length) body.metadata.videos = args.videoInputs.map((item) => item.key === "video-url" ? item.value : path.basename(item.value));
-    if (args.audioInputs.length) body.metadata.audios = args.audioInputs.map((item) => item.key === "audio-url" ? item.value : path.basename(item.value));
+  if (args["image-url"].length) body.images = args["image-url"];
+  if (args["video-url"].length) body.videos = args["video-url"];
+  if (args["audio-url"].length) body.audios = args["audio-url"];
+  if (args["generate-audio"] !== undefined) {
+    if (!supportsParameter(caps, "generate_audio")) die(`${config.model} does not support --generate-audio.`);
+    body.generate_audio = parseBoolean(args["generate-audio"], "--generate-audio");
+  }
+  if (args.webhook) {
+    if (!supportsParameter(caps, "webhook")) die(`${config.model} does not support --webhook.`);
+    body.webhook = args.webhook;
+  }
+  if (args["metadata-json"] !== undefined) {
+    if (!supportsParameter(caps, "metadata")) die(`${config.model} does not support --metadata-json.`);
+    body.metadata = parseMetadata(args["metadata-json"]);
   }
   return body;
 }
@@ -351,13 +428,13 @@ function appendFile(form, field, filePath) {
 function buildMultipart(body, args) {
   const form = new FormData();
   for (const [key, value] of Object.entries(body)) {
-    if (key !== "images") {
+    if (!["images", "videos", "audios"].includes(key)) {
       form.append(key, typeof value === "object" ? JSON.stringify(value) : String(value));
     }
   }
   for (const item of args.imageInputs) item.key === "image-url" ? form.append("images", item.value) : appendFile(form, "images", item.value);
-  for (const item of args.videoInputs) if (item.key === "video") appendFile(form, "videos", item.value);
-  for (const item of args.audioInputs) if (item.key === "audio") appendFile(form, "audios", item.value);
+  for (const item of args.videoInputs) item.key === "video-url" ? form.append("videos", item.value) : appendFile(form, "videos", item.value);
+  for (const item of args.audioInputs) item.key === "audio-url" ? form.append("audios", item.value) : appendFile(form, "audios", item.value);
   return form;
 }
 
@@ -488,7 +565,11 @@ async function main() {
       transport: hasLocalMedia(args) ? "multipart/form-data" : "application/json",
       has_api_key: config.hasApiKey, api_key_source: config.apiKeySource,
       request: body ? { ...body, images: body.images, multipart_files: { images: args.image, videos: args.video, audios: args.audio }, input_optimization: args.inputOptimization } : null,
+      effective_resolution: args.effectiveResolution || loadVideoCapabilities(config.model).fixed_resolution || body?.resolution || null,
+      resolution_sent: Boolean(body && Object.hasOwn(body, "resolution")),
       parameter_adjustments: args.parameterAdjustments || [],
+      prompt_validation: args.promptValidation || null,
+      prompt_file: args["prompt-file"] ? path.resolve(args["prompt-file"]) : null,
       resume_id: resumeId || null, task_file: stateFile, output: outputPath,
     }, null, 2));
     return;
@@ -512,11 +593,11 @@ async function main() {
   }
   const id = task.id || resumeId;
   if (!id) die("video API response did not contain an id.");
-  writeTaskState(stateFile, { id, status: task.status, progress: task.progress, created: task.created, model: task.model || config.model, output: outputPath, updated_at: new Date().toISOString() });
+  writeTaskState(stateFile, { id, status: task.status, progress: task.progress, created: task.created, model: task.model || config.model, output: outputPath, prompt_file: args["prompt-file"] ? path.resolve(args["prompt-file"]) : null, prompt_validation: args.promptValidation || null, updated_at: new Date().toISOString() });
   const completed = videoUrlOf(task) && statusOf(task) === "succeeded" ? { ...task, video_url: videoUrlOf(task) } : await waitForVideo(id, args, config, task);
   progress(args, "Video is ready. Downloading content.");
   const written = await downloadVideo(completed.video_url, outputPath, config);
-  const summary = { id, status: completed.status, provider: config.providerName, model: completed.model || config.model, requested_duration: args.duration === undefined ? null : Number(args.duration), duration: completed.duration || body?.duration, aspect_ratio: completed.aspect_ratio || body?.aspect_ratio, resolution: completed.resolution || body?.resolution || "768p", parameter_adjustments: args.parameterAdjustments || [], video_url: completed.video_url, output: written };
+  const summary = { id, status: completed.status, provider: config.providerName, model: completed.model || config.model, requested_duration: args.duration === undefined ? null : Number(args.duration), duration: completed.duration || body?.duration, aspect_ratio: completed.aspect_ratio || body?.aspect_ratio, resolution: completed.resolution || args.effectiveResolution || loadVideoCapabilities(config.model).fixed_resolution || body?.resolution || null, parameter_adjustments: args.parameterAdjustments || [], prompt_file: args["prompt-file"] ? path.resolve(args["prompt-file"]) : null, prompt_validation: args.promptValidation || null, video_url: completed.video_url, output: written };
   if (args.json) console.log(JSON.stringify(summary, null, 2)); else console.log(`Wrote ${written}`);
   } finally {
     cleanupImages();
