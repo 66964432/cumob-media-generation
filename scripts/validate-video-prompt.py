@@ -13,7 +13,7 @@ def main():
     source = parser.add_mutually_exclusive_group()
     source.add_argument("--prompt")
     source.add_argument("--prompt-file")
-    parser.add_argument("--video-model", default="minimax-h3-ref")
+    parser.add_argument("--video-model", default="minimax-h3")
     parser.add_argument("--duration", type=float, default=10)
     parser.add_argument("--image-count", type=int, default=0)
     parser.add_argument("--video-count", type=int, default=0)

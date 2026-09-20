@@ -29,7 +29,7 @@ const prompt = args.prompt ?? (args["prompt-file"] ? fs.readFileSync(args["promp
 try {
   const result = validateVideoPrompt({
     prompt,
-    model: args["video-model"] || "minimax-h3-ref",
+    model: args["video-model"] || "minimax-h3",
     duration: Number(args.duration || 10),
     imageCount: Number(args["image-count"] || 0),
     videoCount: Number(args["video-count"] || 0),

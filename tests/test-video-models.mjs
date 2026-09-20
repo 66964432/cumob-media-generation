@@ -13,7 +13,7 @@ fs.writeFileSync(path.join(temp, "config.toml"), [
   'model_provider = "test"',
   '[model_providers.test]',
   'base_url = "https://example.test/v1"',
-  'video_model = "minimax-h3-ref"',
+  'video_model = "minimax-h3"',
   "",
 ].join("\n"));
 
@@ -47,8 +47,14 @@ function runFailure(runtime, args) {
 
 try {
   for (const runtime of runtimes) {
+    const legacyAlias = dryRun(runtime, [
+      "--prompt", "test", "--video-model", "minimax-h3-ref",
+    ]);
+    assert.equal(legacyAlias.video_model, "minimax-h3");
+    assert.match(legacyAlias.parameter_adjustments.join("\n"), /compatibility alias/);
+
     const h3 = dryRun(runtime, [
-      "--prompt", "test", "--video-model", "minimax-h3-ref", "--duration", "9",
+      "--prompt", "test", "--video-model", "minimax-h3", "--duration", "9",
       "--resolution", "1440p", "--video-url", "https://example.test/video.mp4",
       "--audio-url", "https://example.test/audio.mp3", "--generate-audio", "true",
       "--metadata-json", '{"job":"test"}',
@@ -63,7 +69,7 @@ try {
     assert.equal(h3.request.generate_audio, true);
 
     const h3_2k = dryRun(runtime, [
-      "--prompt", "test", "--video-model", "minimax-h3-2k-ref", "--duration", "16",
+      "--prompt", "test", "--video-model", "minimax-h3-2k", "--duration", "16",
       "--resolution", "768p", "--image-url", "https://example.test/image.png",
       "--audio-url", "https://example.test/audio.mp3",
     ]);
@@ -74,7 +80,7 @@ try {
     assert.deepEqual(h3_2k.request.images, ["https://example.test/image.png"]);
     assert.deepEqual(h3_2k.request.audios, ["https://example.test/audio.mp3"]);
 
-    const exactLimit = ["--prompt", "test", "--video-model", "minimax-h3-2k-ref"];
+    const exactLimit = ["--prompt", "test", "--video-model", "minimax-h3-2k"];
     for (let index = 0; index < 9; index += 1) exactLimit.push("--image-url", `https://example.test/image-${index}.png`);
     for (let index = 0; index < 3; index += 1) exactLimit.push("--audio-url", `https://example.test/audio-${index}.mp3`);
     const exactLimitResult = dryRun(runtime, exactLimit);
@@ -82,18 +88,18 @@ try {
     assert.equal(exactLimitResult.request.images.length + exactLimitResult.request.audios.length, 12);
 
     const unsupportedVideo = runFailure(runtime, [
-      "--prompt", "test", "--video-model", "minimax-h3-2k-ref",
+      "--prompt", "test", "--video-model", "minimax-h3-2k",
       "--video-url", "https://example.test/video.mp4", "--dry-run",
     ]);
     assert.match(unsupportedVideo.stderr, /does not support video references/);
 
     const unsupportedParameter = runFailure(runtime, [
-      "--prompt", "test", "--video-model", "minimax-h3-ref",
+      "--prompt", "test", "--video-model", "minimax-h3",
       "--negative-prompt", "blur", "--dry-run",
     ]);
     assert.match(unsupportedParameter.stderr, /unsupported option|unrecognized arguments/);
 
-    const tooManyReferences = ["--prompt", "test", "--video-model", "minimax-h3-ref"];
+    const tooManyReferences = ["--prompt", "test", "--video-model", "minimax-h3"];
     for (let index = 0; index < 9; index += 1) tooManyReferences.push("--image-url", `https://example.test/image-${index}.png`);
     for (let index = 0; index < 3; index += 1) tooManyReferences.push("--video-url", `https://example.test/video-${index}.mp4`);
     tooManyReferences.push("--audio-url", "https://example.test/audio.mp3", "--dry-run");

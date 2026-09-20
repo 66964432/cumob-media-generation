@@ -4,12 +4,12 @@
 
 一个面向 Codex 的图片和视频生成 Skill。它通过当前 Codex provider 调用 CUMOB
 兼容接口，支持图片生成、编辑、局部重绘、风格转换，以及包括
-`minimax-h3-ref` 和 `minimax-h3-2k-ref` 在内的视频生成模型。
+`minimax-h3` 和 `minimax-h3-2k` 在内的视频生成模型。
 
 项目内置 Node.js 和 Python 两套零第三方依赖脚本，可直接读取 Codex 的
 `config.toml` 与 `auth.json`，无需把 API Key 写进命令行。
 
-当前版本：`0.5.0`
+当前版本：`0.6.0`
 
 ## 功能
 
@@ -25,7 +25,7 @@
 - 默认在上传前将超过 4MB 的参考图压缩为最长边 1536px 的临时副本。
 - 自动保护透明 PNG，且不会修改原图或蒙版文件。
 - 图片和视频默认使用 `async=true`，状态轮询默认固定每 30 秒一次（可通过 `--poll-interval <seconds>` 覆盖）；正常查询不会逐次翻倍，服务端返回的 `retry_after`/`retryAfter` 优先，临时网络错误和 408/425/429/5xx 使用独立的指数退避（最多 60 秒），并支持断点恢复；视频完成后下载 MP4，图片完成后保存 URL/Base64 结果。
-- 视频模型参数按 `video-models.json` 的能力矩阵自动处理；`minimax-h3-ref` 支持 10-15 秒、固定 768p 并支持视频参考，`minimax-h3-2k-ref` 支持 10-15 秒、固定 1440p 但不支持视频参考。固定分辨率由 CUMOB 默认应用，请求中无需发送 `resolution`。可安全调整的范围错误会自动归一化并提示；模型不支持的视频参考会在发送前报错。
+- 视频模型参数按 `video-models.json` 的能力矩阵自动处理；`minimax-h3` 支持 10-15 秒、固定 768p 并支持视频参考，`minimax-h3-2k` 支持 10-15 秒、固定 1440p 但不支持视频参考。固定分辨率由 CUMOB 默认应用，请求中无需发送 `resolution`。可安全调整的范围错误会自动归一化并提示；模型不支持的视频参考会在发送前报错。
 - 视频接口在没有本地参考媒体时优先使用 JSON；包含本地图片、视频或音频时自动使用 multipart 上传。
 
 ## 项目结构
@@ -140,9 +140,9 @@ model = "your-response-model"
 name = "CUMOB"
 base_url = "https://api.cumob.com/v1"
 image_api = "images"
-image_model = "gpt-image-2-ref"
+image_model = "gpt-image-2.5"
 video_api = "videos"
-video_model = "minimax-h3-ref"
+video_model = "minimax-h3"
 ```
 
 脚本会调用：
@@ -178,7 +178,7 @@ export OPENAI_BASE_URL="https://example.com/v1"
 export OPENAI_MODEL="your-response-model"
 export OPENAI_IMAGE_MODEL="gpt-image-1"
 export OPENAI_IMAGE_API="responses"
-export OPENAI_VIDEO_MODEL="minimax-h3-ref"
+export OPENAI_VIDEO_MODEL="minimax-h3"
 export OPENAI_API_KEY="<your-api-key>"
 ```
 
@@ -324,7 +324,7 @@ node scripts/generate-video.mjs \
 ```bash
 node scripts/validate-video-prompt.mjs \
   --prompt-file outputs/cat.prompt.txt \
-  --video-model minimax-h3-ref \
+  --video-model minimax-h3 \
   --prompt-mode I2VA \
   --prompt-source codex-current-model \
   --duration 10 \
@@ -334,7 +334,7 @@ node scripts/generate-video.mjs \
   --prompt-file outputs/cat.prompt.txt \
   --prompt-mode I2VA \
   --prompt-source codex-current-model \
-  --video-model minimax-h3-ref \
+  --video-model minimax-h3 \
   --image reference.png \
   --duration 10 \
   --out outputs/cat.mp4
@@ -343,7 +343,9 @@ node scripts/generate-video.mjs \
 以上命令不会调用 H3-Context-IR；`codex-current-model` 只记录最终提示词由当前
 Codex 会话模型根据官方 Skill 编写。
 
-视频模型能力保存在 `video-models.json`。两个 Minimax H3 ref 模型的时长均为 10-15 秒，默认 10 秒。`minimax-h3-ref` 固定 768p，最多支持 9 张图片、3 段视频和 3 段音频；`minimax-h3-2k-ref` 固定 1440p，最多支持 9 张图片和 3 段音频，不支持视频参考。两者的图片、视频、音频混合总数均不得超过 12。固定分辨率不发送给接口，但 `--dry-run` 和结果摘要会显示实际有效分辨率。
+视频模型能力保存在 `video-models.json`。两个 MiniMax H3 模型的时长均为 10-15 秒，默认 10 秒。`minimax-h3` 固定 768p，最多支持 9 张图片、3 段视频和 3 段音频；`minimax-h3-2k` 固定 1440p，最多支持 9 张图片和 3 段音频，不支持视频参考。两者的图片、视频、音频混合总数均不得超过 12。固定分辨率不发送给接口，但 `--dry-run` 和结果摘要会显示实际有效分辨率。
+
+旧模型名 `minimax-h3-ref`、`minimax-h3-2k-ref` 和 `agnes-video-v2.0-ref` 会自动映射到新的正式模型名，升级后无需立即修改已有配置。
 
 没有本地参考媒体时使用 JSON；存在本地图片、视频或音频时使用 multipart。图片、视频和音频引用分别使用接口顶层的 `images`、`videos`、`audios` 字段，`metadata` 仅用于用户业务附加信息。视频和音频可在提示词中使用 `@视频1`、`@音频1` 引用。可以通过 `--generate-audio true|false`、`--webhook <url>` 和 `--metadata-json <json>` 设置两个 Minimax 模型共同支持的附加参数。`negative_prompt`、`hd`、`first_frame` 和 `last_frame` 当前不受这两个模型支持，因此脚本不提供对应选项。
 
@@ -432,7 +434,7 @@ PYTHONPYCACHEPREFIX=/tmp/cumob-video-pycache \
 node scripts/generate-image.mjs \
   --prompt "test" \
   --image-api images \
-  --image-model gpt-image-2-ref \
+  --image-model gpt-image-2.5 \
   --dry-run
 ```
 

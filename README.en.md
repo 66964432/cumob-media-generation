@@ -5,13 +5,13 @@
 A media-generation Skill for Codex that uses the active Codex provider to call
 CUMOB-compatible image and video APIs. It supports image generation, editing,
 inpainting, restyling, and video generation with models including
-`minimax-h3-ref` and `minimax-h3-2k-ref`.
+`minimax-h3` and `minimax-h3-2k`.
 
 The project includes dependency-free Node.js and Python scripts. They read
 Codex's `config.toml` and `auth.json` directly, so API keys do not need to be
 placed on the command line.
 
-Current version: `0.5.0`
+Current version: `0.6.0`
 
 ## Features
 
@@ -40,9 +40,9 @@ Current version: `0.5.0`
   `retry_after`/`retryAfter` values take precedence, while transient network
   errors and 408/425/429/5xx responses use independent exponential backoff up to
   60 seconds. Tasks can be resumed without creating a duplicate request.
-- Loads video model capabilities from `video-models.json`. `minimax-h3-ref`
+- Loads video model capabilities from `video-models.json`. `minimax-h3`
   supports 10-15 seconds at fixed 768p and accepts video references;
-  `minimax-h3-2k-ref` supports 10-15 seconds at fixed 1440p but does not accept
+  `minimax-h3-2k` supports 10-15 seconds at fixed 1440p but does not accept
   video references. CUMOB applies each fixed resolution by default, so the
   request omits `resolution`. Safely adjustable range errors are normalized
   with a notice, while unsupported video references fail before submission.
@@ -170,9 +170,9 @@ model = "your-response-model"
 name = "CUMOB"
 base_url = "https://api.cumob.com/v1"
 image_api = "images"
-image_model = "gpt-image-2-ref"
+image_model = "gpt-image-2.5"
 video_api = "videos"
-video_model = "minimax-h3-ref"
+video_model = "minimax-h3"
 ```
 
 The scripts call:
@@ -208,7 +208,7 @@ export OPENAI_BASE_URL="https://example.com/v1"
 export OPENAI_MODEL="your-response-model"
 export OPENAI_IMAGE_MODEL="gpt-image-1"
 export OPENAI_IMAGE_API="responses"
-export OPENAI_VIDEO_MODEL="minimax-h3-ref"
+export OPENAI_VIDEO_MODEL="minimax-h3"
 export OPENAI_API_KEY="<your-api-key>"
 ```
 
@@ -358,7 +358,7 @@ H3 Skill, save the final text to a file first:
 ```bash
 node scripts/validate-video-prompt.mjs \
   --prompt-file outputs/cat.prompt.txt \
-  --video-model minimax-h3-ref \
+  --video-model minimax-h3 \
   --prompt-mode I2VA \
   --prompt-source codex-current-model \
   --duration 10 \
@@ -368,7 +368,7 @@ node scripts/generate-video.mjs \
   --prompt-file outputs/cat.prompt.txt \
   --prompt-mode I2VA \
   --prompt-source codex-current-model \
-  --video-model minimax-h3-ref \
+  --video-model minimax-h3 \
   --image reference.png \
   --duration 10 \
   --out outputs/cat.mp4
@@ -377,12 +377,16 @@ node scripts/generate-video.mjs \
 These commands do not call H3-Context-IR. `codex-current-model` only records
 that the current Codex task wrote the final prompt using the official Skill.
 
-Both Minimax H3 ref models accept integer durations from 10 through 15, defaulting
-to 10. `minimax-h3-ref` is fixed at 768p and accepts up to 9 images, 3 videos,
-and 3 audios. `minimax-h3-2k-ref` is fixed at 1440p and accepts up to 9 images
+Both MiniMax H3 models accept integer durations from 10 through 15, defaulting
+to 10. `minimax-h3` is fixed at 768p and accepts up to 9 images, 3 videos,
+and 3 audios. `minimax-h3-2k` is fixed at 1440p and accepts up to 9 images
 and 3 audios, but no video references. Both enforce a combined limit of 12
 references. Fixed resolutions are omitted from API requests but appear as the
 effective resolution in `--dry-run` and result summaries.
+
+Legacy model names `minimax-h3-ref`, `minimax-h3-2k-ref`, and
+`agnes-video-v2.0-ref` are mapped to the new canonical identifiers so existing
+configurations continue to work after upgrading.
 
 The script uses JSON for URL-only references and multipart for local media.
 Image, video, and audio references use the top-level `images`, `videos`, and
@@ -470,7 +474,7 @@ Inspect an Images API request offline:
 node scripts/generate-image.mjs \
   --prompt "test" \
   --image-api images \
-  --image-model gpt-image-2-ref \
+  --image-model gpt-image-2.5 \
   --dry-run
 ```
 

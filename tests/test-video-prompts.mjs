@@ -14,7 +14,7 @@ fs.writeFileSync(path.join(temp, "config.toml"), [
   'model_provider = "test"',
   '[model_providers.test]',
   'base_url = "https://example.test/v1"',
-  'video_model = "minimax-h3-ref"',
+  'video_model = "minimax-h3"',
   "",
 ].join("\n"));
 
@@ -68,7 +68,7 @@ try {
       "--prompt-file", promptFile,
       "--prompt-mode", "I2VA",
       "--prompt-source", "codex-current-model",
-      "--video-model", "minimax-h3-ref",
+      "--video-model", "minimax-h3",
       "--duration", "10",
       "--image-url", "https://example.test/image.png",
     ]);
@@ -85,7 +85,7 @@ try {
       "--prompt", refPrompt,
       "--prompt-mode", "Ref2VA",
       "--prompt-source", "codex-current-model",
-      "--video-model", "minimax-h3-2k-ref",
+      "--video-model", "minimax-h3-2k",
       "--duration", "10",
       "--image-url", "https://example.test/image.png",
       "--audio-url", "https://example.test/audio.mp3",
@@ -110,7 +110,7 @@ try {
 
     fail(runtime, [
       "--prompt", basePrompt.replace("<Picture 1>", "<Video 1>"),
-      "--video-model", "minimax-h3-2k-ref",
+      "--video-model", "minimax-h3-2k",
       "--video-url", "https://example.test/video.mp4",
       "--prompt-mode", "I2VA",
       "--dry-run",

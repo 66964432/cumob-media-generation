@@ -10,9 +10,9 @@ Use this skill to create or edit images through the active Codex provider. The b
 - `image_api = "images"`: call `<base_url>/images/generations` or `<base_url>/images/edits` directly.
 - `image_api = "responses"` or unset: call `<base_url>/responses` with the `image_generation` tool.
 
-For CUMOB, configure `base_url = "https://api.cumob.com/v1"`, `image_api = "images"`, and `image_model = "gpt-image-2-ref"`.
+For CUMOB, configure `base_url = "https://api.cumob.com/v1"`, `image_api = "images"`, and `image_model = "gpt-image-2.5"`.
 
-For CUMOB video generation, use the bundled `scripts/generate-video.mjs` (or its Python fallback). Configure `video_api = "videos"` and `video_model` to the desired default. The script calls `<base_url>/videos` with `async=true` and polls `<base_url>/status/{id}`. Video model capabilities are loaded from `video-models.json`; duration, fixed resolution, supported fields, and reference limits are enforced per model. `minimax-h3-ref` accepts 10-15 seconds, uses fixed 768p, and supports video references. `minimax-h3-2k-ref` accepts 10-15 seconds, uses fixed 1440p, and rejects video references before submission. Fixed resolutions are not sent because CUMOB applies the model default. Image, video, and audio references use the top-level `images`, `videos`, and `audios` fields; `metadata` is reserved for user-defined task context. Local reference media use multipart upload, while URL-only references use JSON.
+For CUMOB video generation, use the bundled `scripts/generate-video.mjs` (or its Python fallback). Configure `video_api = "videos"` and `video_model` to the desired default. The script calls `<base_url>/videos` with `async=true` and polls `<base_url>/status/{id}`. Video model capabilities are loaded from `video-models.json`; duration, fixed resolution, supported fields, and reference limits are enforced per model. `minimax-h3` accepts 10-15 seconds, uses fixed 768p, and supports video references. `minimax-h3-2k` accepts 10-15 seconds, uses fixed 1440p, and rejects video references before submission. Fixed resolutions are not sent because CUMOB applies the model default. Image, video, and audio references use the top-level `images`, `videos`, and `audios` fields; `metadata` is reserved for user-defined task context. Local reference media use multipart upload, while URL-only references use JSON.
 
 ## Vendor Prompt Skills
 
@@ -82,7 +82,7 @@ Use Codex's API configuration by default:
 - Use provider `base_url` as the API URL.
 - Use provider `image_api` to select `images` or `responses`; default to `responses` for backward compatibility.
 - Use provider `image_model` as the image model unless `--image-model` overrides it.
-- Use provider `video_model` as the video model unless `--video-model` overrides it; the video script defaults to `minimax-h3-ref`.
+- Use provider `video_model` as the video model unless `--video-model` overrides it; the video script defaults to `minimax-h3`.
 - Use the top-level `model` as the Responses model unless the user explicitly asks for another model.
 - Read `OPENAI_API_KEY` from the matching `auth.json`.
 - Do not ask the user for an API key when Codex config is available.
@@ -216,7 +216,7 @@ If neither Node nor Python is available, stop and tell the user one local runtim
 
 ## Common Commands
 
-Generate a video with CUMOB `minimax-h3-ref`:
+Generate a video with CUMOB `minimax-h3`:
 
 ```bash
 node <skill-dir>/scripts/generate-video.mjs \
@@ -237,7 +237,7 @@ node <skill-dir>/scripts/generate-video.mjs \
   --out outputs/remix.mp4
 ```
 
-For both Minimax H3 ref models, `duration` must be an integer from 10 through 15 (default 10), images must not exceed 9, audios must not exceed 3, and total image/video/audio references must not exceed 12. `minimax-h3-ref` additionally accepts up to 3 videos; `minimax-h3-2k-ref` accepts no video references. Do not send `negative_prompt`, `hd`, `first_frame`, or `last_frame` to either model.
+For both MiniMax H3 models, `duration` must be an integer from 10 through 15 (default 10), images must not exceed 9, audios must not exceed 3, and total image/video/audio references must not exceed 12. `minimax-h3` additionally accepts up to 3 videos; `minimax-h3-2k` accepts no video references. Legacy model identifiers `minimax-h3-ref`, `minimax-h3-2k-ref`, and `agnes-video-v2.0-ref` are compatibility aliases for their canonical identifiers. Do not send `negative_prompt`, `hd`, `first_frame`, or `last_frame` to either model.
 
 Generate a new image:
 
@@ -305,7 +305,7 @@ For a one-off backend override:
 ```bash
 node <skill-dir>/scripts/generate-image.mjs \
   --image-api images \
-  --image-model gpt-image-2-ref \
+  --image-model gpt-image-2.5 \
   --prompt "A quick test image" \
   --out outputs/test.png
 ```

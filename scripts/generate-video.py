@@ -82,12 +82,16 @@ def resolve_config(args):
     base_url = (args.base_url or provider.get("base_url") or env_value("OPENAI_BASE_URL") or "https://api.cumob.com/v1").rstrip("/")
     create_url = (args.video_create_url or provider.get("video_create_url") or f"{base_url}/videos").rstrip("/")
     status_url = (args.video_status_url or provider.get("video_status_url") or f"{base_url}/status").rstrip("/")
-    model = args.video_model or provider.get("video_model") or env_value("OPENAI_VIDEO_MODEL") or "minimax-h3-ref"
+    requested_model = args.video_model or provider.get("video_model") or env_value("OPENAI_VIDEO_MODEL") or "minimax-h3"
+    try:
+        model = load_video_registry().get("model_aliases", {}).get(requested_model, requested_model)
+    except Exception:
+        model = requested_model
     auth = json.loads(auth_path.read_text(encoding="utf-8")) if auth_path.exists() else {}
     api_key = auth.get("OPENAI_API_KEY") or env_value(key_env)
     if not api_key and not args.dry_run:
         die(f"no API key found in {auth_path} or environment variable {key_env}.")
-    return {"codex_home": str(codex_home), "config_path": str(config_path), "auth_path": str(auth_path), "provider_name": provider_name, "base_url": base_url, "create_url": create_url, "status_url": status_url, "model": model, "api_key": api_key, "has_api_key": bool(api_key), "api_key_source": "codex-auth" if auth.get("OPENAI_API_KEY") else f"env:{key_env}" if api_key else "none"}
+    return {"codex_home": str(codex_home), "config_path": str(config_path), "auth_path": str(auth_path), "provider_name": provider_name, "base_url": base_url, "create_url": create_url, "status_url": status_url, "requested_model": requested_model, "model": model, "api_key": api_key, "has_api_key": bool(api_key), "api_key_source": "codex-auth" if auth.get("OPENAI_API_KEY") else f"env:{key_env}" if api_key else "none"}
 
 
 def task_state_path(args):
@@ -221,6 +225,10 @@ def build_request(prompt, args, config):
     requested_duration = args.duration
     duration = int(caps.get("duration", {}).get("default", 10) if requested_duration is None else requested_duration)
     adjustments = []
+    if config.get("requested_model") != config["model"]:
+        adjustments.append(
+            f"model {config['requested_model']} is a compatibility alias; using {config['model']}"
+        )
     fixed_resolution = caps.get("fixed_resolution")
     effective_resolution = fixed_resolution or args.resolution or caps.get("default_resolution")
     if fixed_resolution and args.resolution and args.resolution != fixed_resolution:
@@ -255,14 +263,14 @@ def build_request(prompt, args, config):
     if image_count and not supports_parameter(caps, "images"):
         die(f"{config['model']} does not support image references.")
     if video_count and not supports_parameter(caps, "videos"):
-        die(f"{config['model']} does not support video references. Remove --video/--video-url or use a model that supports them, such as minimax-h3-ref.")
+        die(f"{config['model']} does not support video references. Remove --video/--video-url or use a model that supports them, such as minimax-h3.")
     if audio_count and not supports_parameter(caps, "audios"):
         die(f"{config['model']} does not support audio references.")
     if image_count > max_images:
         die(f"{config['model']} accepts at most {max_images} reference images.")
     if video_count > max_videos:
         if max_videos == 0:
-            die(f"{config['model']} does not support video references. Remove --video/--video-url or use minimax-h3-ref.")
+            die(f"{config['model']} does not support video references. Remove --video/--video-url or use minimax-h3.")
         die(f"{config['model']} accepts at most {max_videos} reference videos.")
     if audio_count > max_audios:
         die(f"{config['model']} accepts at most {max_audios} reference audios.")

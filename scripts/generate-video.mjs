@@ -25,7 +25,7 @@ Codex/CUMOB config:
   --base-url <url>            Provider base URL, normally https://api.cumob.com/v1
   --video-create-url <url>    Override the create endpoint.
   --video-status-url <url>    Override the status endpoint base (without /{id}).
-  --video-model <model>       Defaults to provider video_model or minimax-h3-ref.
+  --video-model <model>       Defaults to provider video_model or minimax-h3.
   --api-key-env <name>        Environment fallback for the API key.
   --prompt-mode <mode>        T2VA, I2VA, FL2VA, L2VA, or Ref2VA.
   --prompt-source <source>    Prompt provenance: user, codex-current-model, or minimax-context-ir.
@@ -190,12 +190,16 @@ function resolveConfig(args) {
   const baseUrl = (args["base-url"] || provider.base_url || envValue("OPENAI_BASE_URL") || "https://api.cumob.com/v1").replace(/\/+$/, "");
   const createUrl = (args["video-create-url"] || provider.video_create_url || `${baseUrl}/videos`).replace(/\/+$/, "");
   const statusUrl = (args["video-status-url"] || provider.video_status_url || `${baseUrl}/status`).replace(/\/+$/, "");
-  const model = args["video-model"] || provider.video_model || envValue("OPENAI_VIDEO_MODEL") || "minimax-h3-ref";
+  const requestedModel = args["video-model"] || provider.video_model || envValue("OPENAI_VIDEO_MODEL") || "minimax-h3";
+  let model = requestedModel;
+  try {
+    model = loadVideoRegistry().model_aliases?.[requestedModel] || requestedModel;
+  } catch {}
   const auth = readJsonIfExists(authPath);
   const apiKey = auth.OPENAI_API_KEY || envValue(keyEnv);
   if (!apiKey && !args["dry-run"]) die(`no API key found in ${authPath} or environment variable ${keyEnv}.`);
   return {
-    codexHome, configPath, authPath, providerName, baseUrl, createUrl, statusUrl, model,
+    codexHome, configPath, authPath, providerName, baseUrl, createUrl, statusUrl, requestedModel, model,
     apiKey, hasApiKey: Boolean(apiKey), apiKeySource: auth.OPENAI_API_KEY ? "codex-auth" : apiKey ? `env:${keyEnv}` : "none",
   };
 }
@@ -220,6 +224,9 @@ function normalizeVideoParameters(args, config) {
   const requestedDuration = args.duration === undefined ? null : Number(args.duration);
   let duration = requestedDuration === null ? Number(capabilities.duration?.default ?? 10) : requestedDuration;
   const adjustments = [];
+  if (config.requestedModel !== config.model) {
+    adjustments.push(`model ${config.requestedModel} is a compatibility alias; using ${config.model}`);
+  }
   const minDuration = Number(capabilities.duration?.min ?? 4);
   let maxDuration = Number(capabilities.duration?.max ?? 20);
   let effectiveResolution = capabilities.fixed_resolution || args.resolution || capabilities.default_resolution;
@@ -369,11 +376,11 @@ function buildRequest(prompt, args, config) {
   const maxVideos = Number(caps.max_videos ?? 3);
   const maxAudios = Number(caps.max_audios ?? 3);
   if (imageCount && !supportsParameter(caps, "images")) die(`${config.model} does not support image references.`);
-  if (videoCount && !supportsParameter(caps, "videos")) die(`${config.model} does not support video references. Remove --video/--video-url or use a model that supports them, such as minimax-h3-ref.`);
+  if (videoCount && !supportsParameter(caps, "videos")) die(`${config.model} does not support video references. Remove --video/--video-url or use a model that supports them, such as minimax-h3.`);
   if (audioCount && !supportsParameter(caps, "audios")) die(`${config.model} does not support audio references.`);
   if (imageCount > maxImages) die(`${config.model} accepts at most ${maxImages} reference images.`);
   if (videoCount > maxVideos) {
-    if (maxVideos === 0) die(`${config.model} does not support video references. Remove --video/--video-url or use minimax-h3-ref.`);
+    if (maxVideos === 0) die(`${config.model} does not support video references. Remove --video/--video-url or use minimax-h3.`);
     die(`${config.model} accepts at most ${maxVideos} reference videos.`);
   }
   if (audioCount > maxAudios) die(`${config.model} accepts at most ${maxAudios} reference audios.`);

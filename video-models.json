@@ -1,5 +1,10 @@
 {
-  "default_model": "minimax-h3-ref",
+  "default_model": "minimax-h3",
+  "model_aliases": {
+    "minimax-h3-ref": "minimax-h3",
+    "minimax-h3-2k-ref": "minimax-h3-2k",
+    "agnes-video-v2.0-ref": "agnes-video-v2.0"
+  },
   "prompt_skills": {
     "minimax-h3-official": {
       "vendor": "minimax",
@@ -13,7 +18,7 @@
     }
   },
   "models": {
-    "minimax-h3-ref": {
+    "minimax-h3": {
       "vendor": "minimax",
       "prompt_skill": "minimax-h3-official",
       "duration": { "min": 10, "max": 15, "default": 10 },
@@ -28,7 +33,7 @@
       "max_audios": 3,
       "max_total_references": 12
     },
-    "minimax-h3-2k-ref": {
+    "minimax-h3-2k": {
       "vendor": "minimax",
       "prompt_skill": "minimax-h3-official",
       "duration": { "min": 10, "max": 15, "default": 10 },
@@ -43,7 +48,7 @@
       "max_audios": 3,
       "max_total_references": 12
     },
-    "agnes-video-v2.0-ref": {
+    "agnes-video-v2.0": {
       "duration": { "min": 3, "max": 18, "default": 10 },
       "resolutions": ["480p", "720p", "1080p"],
       "default_resolution": "720p",
