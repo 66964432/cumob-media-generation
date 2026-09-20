@@ -2,6 +2,33 @@
 
 **中文** | [English](README.en.md)
 
+> 从创作需求到图片和带声音视频，在 Codex 中完成。
+
+`cumob-media-generation4codex` 让 Codex 可以执行图片生成、图片编辑、参考素材视频和带声音视频工作流，并自动处理模型参数校验、本地素材上传、异步任务轮询、断点恢复和结果保存。
+
+[查看 32 秒真实案例](docs/cases/tide01-product-promo/README.md) · [macOS / Windows 一键安装](https://github.com/66964432/cumob-codex-oneclick-installer/releases/latest) · [安装安全说明](https://github.com/66964432/cumob-codex-oneclick-installer#安全)
+
+## 真实案例
+
+一份 32 秒 Word 分镜经过以下流程输出为 1080×1920 带声音推广片：
+
+```text
+读取剧本 → 用户确认 → 产品技术样片 → 抽帧检查与重试
+→ 三段末帧链式生成 → 英语音轨转写 → 后期修正 → 32 秒 MP4
+```
+
+这不是“一次生成完美”的演示。案例中真实出现了动作不清晰、服务端失败和音轨时间偏差；Codex通过重写提示词、任务恢复、抽帧检查和后期修正完成交付。
+
+![三段链式生成流程](docs/assets/tide01-workflow-chain.png)
+
+## 三种开始方式
+
+| 我想做什么 | 推荐入口 |
+| --- | --- |
+| 最快完成安装 | [下载一键安装器](https://github.com/66964432/cumob-codex-oneclick-installer/releases/latest) |
+| 查看可复现案例 | [TIDE01 产品推广视频案例](docs/cases/tide01-product-promo/README.md) |
+| 了解底层能力 | 继续阅读本 README 的功能、模型和 CLI 文档 |
+
 一个面向 Codex 的图片和视频生成 Skill。它通过当前 Codex provider 调用 CUMOB
 兼容接口，支持图片生成、编辑、局部重绘、风格转换，以及包括
 `minimax-h3` 和 `minimax-h3-2k` 在内的视频生成模型。

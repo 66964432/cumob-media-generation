@@ -2,6 +2,34 @@
 
 [中文](README.md) | **English**
 
+> From a creative brief to generated images and videos, inside Codex.
+
+`cumob-media-generation4codex` lets Codex execute image generation, image editing, reference-driven video and generated-audio workflows while handling capability validation, local media uploads, asynchronous polling, task resumption and output saving.
+
+[Read the 32-second case study](docs/cases/tide01-product-promo/README.en.md) · [One-click macOS / Windows installer](https://github.com/66964432/cumob-codex-oneclick-installer/releases/latest) · [Read the installer safety notes](https://github.com/66964432/cumob-codex-oneclick-installer#security)
+
+## Real workflow case
+
+A 32-second Word storyboard was delivered through this workflow:
+
+```text
+Read storyboard → obtain user approval → generate technical pilot
+→ inspect and retry → chain three generated clips → transcribe dialogue
+→ repair timing and audio → export a 32-second MP4
+```
+
+This is not a “perfect in one attempt” demonstration. The case includes an unclear hand action, a failed service request and dialogue-timing issues. Codex completed the job by rewriting prompts, recovering tasks, inspecting frames and repairing the final edit.
+
+![Three-stage chained generation workflow](docs/assets/tide01-workflow-chain.png)
+
+## Three ways to start
+
+| Goal | Recommended entry point |
+| --- | --- |
+| Install as quickly as possible | [Download the one-click installer](https://github.com/66964432/cumob-codex-oneclick-installer/releases/latest) |
+| Review a reproducible case | [TIDE01 product-promo case](docs/cases/tide01-product-promo/README.en.md) |
+| Understand the implementation | Continue with the capabilities, model and CLI documentation below |
+
 A media-generation Skill for Codex that uses the active Codex provider to call
 CUMOB-compatible image and video APIs. It supports image generation, editing,
 inpainting, restyling, and video generation with models including
