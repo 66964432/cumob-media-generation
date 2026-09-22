@@ -1,94 +1,45 @@
 {
-  "skill_name": "cumob-media-generation4codex",
+  "skill": "cumob-media-generation4codex",
   "evals": [
     {
       "id": 1,
-      "prompt": "Generate a 1024x1024 PNG image of a matte black ceramic mug on a walnut desk with soft window light. Save it to outputs/mug.png and use the Codex API configuration without asking me for a key.",
-      "expected_output": "The agent uses the bundled script, resolves Codex base URL/image_api/image_model/key, calls the configured Images or Responses backend, and saves outputs/mug.png.",
-      "files": []
+      "prompt": "生成一张 1024x1024 的产品图，保存到 outputs/product.png。",
+      "expected_output": "Runs generate-image.mjs once with the requested size and output path, waits for the existing async task, and reports the saved image."
     },
     {
       "id": 2,
-      "prompt": "Create a transparent-background app icon of a folded paper crane, no text, centered with enough padding. Save as outputs/crane-icon.png.",
-      "expected_output": "The agent sets background transparent and png output format, calls the configured image backend, and reports the saved file path.",
-      "files": []
+      "prompt": "编辑 reference.png，保留构图并改成插画风格。",
+      "expected_output": "Uses generate-image.mjs with --image reference.png. If the file exceeds 4 MB, the upload copy is resized and compressed without modifying the original."
     },
     {
       "id": 3,
-      "prompt": "Restyle reference.png as a polished editorial illustration while preserving composition. Use high input fidelity and save the result to outputs/reference-restyled.png.",
-      "expected_output": "The agent uses --image reference.png, --action edit, --input-fidelity high, and the Codex API config; if the input file is missing, it reports that specific blocker.",
-      "files": [
-        "reference.png"
-      ]
+      "prompt": "同时使用本地 reference.png 和 https://example.com/reference.png 作为参考图生成图片，不要下载 URL 参考图。",
+      "expected_output": "Uses one generate-image.mjs command with both --image and --image-url, sends multipart to /images/generations, uploads only the local file, and forwards the unchanged URL in the images field."
     },
     {
       "id": 4,
-      "prompt": "生成一段 10 秒、16:9 的 minimax-h3 视频，保存到 outputs/demo.mp4。",
-      "expected_output": "The agent routes the request to generate-video, sends one POST to /v1/videos with model minimax-h3, duration 10, and aspect_ratio 16:9, omits the fixed resolution, then polls /v1/status/{id} and saves the returned video_url as an MP4.",
-      "files": []
+      "prompt": "生成一段 10 秒 16:9 的 minimax-h3 视频，保存到 outputs/demo.mp4。",
+      "expected_output": "Runs generate-video.mjs once with model minimax-h3, duration 10, aspect ratio 16:9, and the requested output path."
     },
     {
       "id": 5,
-      "prompt": "使用 reference.png 作为@图片1，生成 12 秒竖屏视频并保存到 outputs/reference-video.mp4。",
-      "expected_output": "The agent routes to the video script, sends the image as a CUMOB-compatible images value, preserves the @图片1 reference, validates duration 12 and aspect_ratio 9:16, and writes the downloaded video.",
-      "files": [
-        "reference.png"
-      ]
+      "prompt": "用一张人物图和一段音频作为参考生成 minimax-h3-2k 视频。",
+      "expected_output": "Uses repeatable image/audio reference options, follows the vendored official H3 Ref2VA prompt guidance, and submits no video reference."
     },
     {
       "id": 6,
-      "prompt": "检查 minimax-h3 视频请求配置，不实际调用接口。",
-      "expected_output": "The agent uses generate-video --dry-run and reports the redacted create/status endpoints, video model, duration/aspect ratio, and reference counts without exposing credentials or base64 contents.",
-      "files": []
+      "prompt": "使用 minimax-h3-2k，并把 motion.mp4 作为参考视频。",
+      "expected_output": "Rejects the request before submission because minimax-h3-2k does not support video references."
     },
     {
       "id": 7,
-      "prompt": "视频任务轮询时第一次状态请求网络中断，但任务之后会成功。不要重复创建任务，继续轮询并保存最终 MP4。",
-      "expected_output": "The agent treats the transient polling network failure as recoverable, sends only one POST create request, continues polling the same task id, writes a task state file, and downloads the completed MP4.",
-      "files": []
+      "prompt": "上次图片任务中断了，请从 outputs/result.png.task.json 恢复。",
+      "expected_output": "Uses --resume with the task file, polls the existing image task first after 30 seconds and then every 15 seconds, and does not create a duplicate task."
     },
     {
       "id": 8,
-      "prompt": "生成一张图片，要求使用 CUMOB Images API 的异步模式，并在任务完成后保存结果。",
-      "expected_output": "The agent sends exactly one Images API create request with async=true, persists the returned task id, polls /v1/status/{id} at the fixed configured interval (30 seconds by default), uses exponential backoff only for transient polling errors, and saves data[].url or data[].b64_json without creating a duplicate task.",
-      "files": []
-    },
-    {
-      "id": 9,
-      "prompt": "图片任务创建后本地进程中断，请使用已有任务 ID 恢复，不要重新创建任务。",
-      "expected_output": "The agent uses generate-image --resume, sends no second POST, polls the existing task, and writes the completed image.",
-      "files": []
-    },
-    {
-      "id": 10,
-      "prompt": "使用 minimax-h3-2k 生成 12 秒视频，带两张参考图片和一段参考音频，不实际调用接口。",
-      "expected_output": "The agent uses generate-video --dry-run with minimax-h3-2k, reports effective resolution 1440p without sending resolution, accepts the image/audio references, and emits top-level images/audios fields.",
-      "files": []
-    },
-    {
-      "id": 11,
-      "prompt": "使用 minimax-h3-2k，并把 motion.mp4 作为参考视频生成视频。",
-      "expected_output": "The agent rejects the request before API submission because minimax-h3-2k does not support video references, and suggests removing the video reference or using minimax-h3.",
-      "files": [
-        "motion.mp4"
-      ]
-    },
-    {
-      "id": 12,
-      "prompt": "使用 minimax-h3 和我给的一张首帧图片生成 10 秒视频。请优化提示词，但不要调用付费的 H3-Context-IR。",
-      "expected_output": "The agent resolves the effective 10-second H3 model settings first, reads the vendored official h3-prompt-writing Skill, uses the current Codex model to create an I2VA three-field prompt, saves it as a prompt file, validates it, and invokes generate-video with --prompt-source codex-current-model. It does not call H3-Context-IR or another prompt model API.",
-      "files": [
-        "first-frame.png"
-      ]
-    },
-    {
-      "id": 13,
-      "prompt": "使用 minimax-h3-2k，把一张人物图和一段音频作为综合参考生成 12 秒视频。",
-      "expected_output": "The agent selects Ref2VA from intent, uses the current Codex model plus the official H3 prompt Skill to produce the six-section prompt with <Picture 1> and <Audio 1>, validates the labels and 12-second timeline, and submits no video references and no external prompt-enhancement request.",
-      "files": [
-        "person.png",
-        "voice.mp3"
-      ]
+      "prompt": "使用给定参考图 URL 生图；上游返回 reference_image_download_failed。",
+      "expected_output": "Immediately reports reference_image_download_failed and asks for an accessible URL or local file. It does not curl the URL, remove the reference, switch Skills/models/providers, or submit a second generation task."
     }
   ]
 }
