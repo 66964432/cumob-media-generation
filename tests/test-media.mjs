@@ -75,6 +75,23 @@ try {
   assert.equal("resolution" in video.request, false);
   assert.deepEqual(video.references, { images: 1, videos: 0, audios: 1 });
 
+  const fhdVideo = dryRun("generate-video.mjs", [
+    "--prompt", "test", "--video-model", "minimax-h3-fhd", "--duration", "20",
+    "--aspect-ratio", "9:16", "--image-url", "https://example.test/reference.png",
+    "--audio-url", "https://example.test/audio.mp3",
+  ]);
+  assert.equal(fhdVideo.endpoint, "https://example.test/v1/videos");
+  assert.equal(fhdVideo.request.model, "minimax-h3-fhd");
+  assert.equal(fhdVideo.request.duration, 15);
+  assert.equal(fhdVideo.request.aspect_ratio, "9:16");
+  assert.equal(fhdVideo.effective_resolution, "1080p");
+  assert.equal("resolution" in fhdVideo.request, false);
+  assert.deepEqual(fhdVideo.references, { images: 1, videos: 0, audios: 1 });
+
+  const fhdInvalidResolution = spawnSync(process.execPath, [path.join(root, "scripts", "generate-video.mjs"), "--codex-home", temp, "--dry-run", "--no-progress", "--prompt", "test", "--video-model", "minimax-h3-fhd", "--resolution", "1440p"], { encoding: "utf8" });
+  assert.notEqual(fhdInvalidResolution.status, 0);
+  assert.match(fhdInvalidResolution.stderr, /unsupported resolution for minimax-h3-fhd: 1440p/);
+
   const rejected = spawnSync(process.execPath, [path.join(root, "scripts/generate-video.mjs"), "--codex-home", temp, "--dry-run", "--no-progress", "--prompt", "test", "--video-model", "minimax-h3-2k", "--video-url", "https://example.test/video.mp4"], { encoding: "utf8" });
   assert.notEqual(rejected.status, 0);
   assert.match(rejected.stderr, /does not support video references/);

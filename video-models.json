@@ -25,6 +25,16 @@
       "max_audios": 3,
       "max_total_references": 12
     },
+    "minimax-h3-fhd": {
+      "duration": { "min": 10, "max": 15, "default": 10 },
+      "fixed_resolution": "1080p",
+      "resolutions": ["1080p"],
+      "aspect_ratios": ["16:9", "9:16", "1:1", "21:9", "3:2", "2:3"],
+      "max_images": 9,
+      "max_videos": 3,
+      "max_audios": 3,
+      "max_total_references": 12
+    },
     "agnes-video-v2.0": {
       "duration": { "min": 3, "max": 18, "default": 10 },
       "resolutions": ["480p", "720p", "1080p"],

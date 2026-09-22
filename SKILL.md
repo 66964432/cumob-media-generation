@@ -1,5 +1,5 @@
 ---
-name: cumob-media-generation4codex
+name: cumob-media-generation
 description: Generate or edit images and generate videos with the configured CUMOB provider. Use for image generation, image editing, text-to-video, and video generation from image/video/audio references.
 ---
 
@@ -15,7 +15,9 @@ node <skill-dir>/scripts/generate-image.mjs \
   --out outputs/image.png
 ```
 
-Add repeatable `--image <path>` and `--image-url <url>` references in any combination. URL references are sent unchanged in the upstream `images` array and are never downloaded locally. Local references larger than 4 MB are compressed before upload without changing the originals. `--mask` requires local images and cannot be combined with URL references. Common options are `--size`, `--quality`, `--format`, `--background`, and `--input-fidelity`. Exact `WIDTHxHEIGHT` output sizes are normalized by the script after download when a local image tool is available.
+Add repeatable `--image <path>` and `--image-url <url>` references in any combination. URL references are sent unchanged in the upstream `images` array and are never downloaded locally. Local references larger than 4 MB are compressed before upload without changing the originals. `--mask` requires local images and cannot be combined with URL references. Common options are `--size`, `--quality`, `--format`, `--background`, and `--input-fidelity`. `--input-fidelity` is not sent upstream unless explicitly provided, because some models do not support it; only pass it when the user requests it. Exact `WIDTHxHEIGHT` output sizes are normalized by the script after download when a local image tool is available.
+
+To pick a specific image model, pass `--image-model <model>` (examples supported by the CUMOB provider include `gpt-image-2.5`, `gemini-3-pro-image-preview`, `gemini-3.1-flash-image-preview`). When the user asks for a model by name in chat ("用 gemini-3.1-flash-image-preview 生成…" / "use gemini-3-pro-image-preview"), pass it through unchanged as `--image-model`. Without the flag, the script uses the active provider's `image_model`, then `OPENAI_IMAGE_MODEL`, then the `gpt-image-2.5` default. The full parameter list is in `scripts/generate-image.mjs --help` and `README.md`.
 
 ## Video
 
@@ -33,7 +35,7 @@ References are repeatable:
 - `--video` / `--video-url`
 - `--audio` / `--audio-url`
 
-Model limits come from `video-models.json` and are enforced by the script.
+Model limits come from `video-models.json` and are enforced by the script. To pick a specific video model pass `--video-model <model>` (e.g. `minimax-h3`, `minimax-h3-2k`, `minimax-h3-fhd`, `agnes-video-v2.0`). Without the flag the script uses the active provider's `video_model`, then `OPENAI_VIDEO_MODEL`, then the `minimax-h3` default.
 
 For MiniMax H3 structured prompts, follow the official Skill at `vendor-skills/minimax/MiniMax-H3-main/skills/h3-prompt-writing/SKILL.md`. Read only its `references/base-en.txt` for T2VA/I2VA/FL2VA/L2VA or `references/ref-en.txt` for Ref2VA. Do not modify files under that official Skill path.
 

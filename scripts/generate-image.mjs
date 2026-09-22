@@ -31,7 +31,7 @@ Core:
   --quality <value>             low, medium, high, or auto
   --format <value>              png, webp, or jpeg
   --background <value>          transparent, opaque, or auto
-  --input-fidelity <value>      high or low
+  --input-fidelity <value>      high or low; omitted by default and only sent when set
 
 Input optimization:
   --max-input-dimension <px>    Default: 1536
