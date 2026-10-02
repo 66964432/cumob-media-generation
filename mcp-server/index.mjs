@@ -16,6 +16,7 @@ import {
 // ── Resolve paths ──────────────────────────────────────────
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SKILL_ROOT = path.resolve(__dirname, "..");
+const DEFAULT_OUTPUT_DIR = path.join(SKILL_ROOT, "outputs");
 const VIDEO_MODELS = JSON.parse(
   fs.readFileSync(path.join(SKILL_ROOT, "video-models.json"), "utf8")
 );
@@ -256,7 +257,7 @@ async function generateImage({
   const model = requestedModel || config.model;
   const headers = { Authorization: `Bearer ${config.apiKey}` };
   const fmt = format || "png";
-  const outPath = output_path || path.join(os.homedir(), "Desktop", `cumob-image-${Date.now()}.${fmt}`);
+  const outPath = output_path || path.join(DEFAULT_OUTPUT_DIR, `image-${Date.now()}.${fmt}`);
 
   const fields = { model, prompt, async: true };
   if (image_urls?.length) fields.images = image_urls;
@@ -345,7 +346,7 @@ async function generateVideo({
   };
 
   const headers = { Authorization: `Bearer ${config.apiKey}` };
-  const outPath = output_path || path.join(os.homedir(), "Desktop", `cumob-video-${Date.now()}.mp4`);
+  const outPath = output_path || path.join(DEFAULT_OUTPUT_DIR, `video-${Date.now()}.mp4`);
 
   // Validate and clamp duration
   const limits = capabilities.duration || { min: 3, max: 20, default: 10 };
@@ -477,7 +478,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           output_path: {
             type: "string",
             description:
-              "Local file path to save the image. Default: ~/Desktop/cumob-image-{timestamp}.png",
+              "Local file path to save the image. Default: <skill-dir>/outputs/image-{timestamp}.png",
           },
         },
         required: ["prompt"],
@@ -534,7 +535,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           output_path: {
             type: "string",
             description:
-              "Local file path to save the video. Default: ~/Desktop/cumob-video-{timestamp}.mp4",
+              "Local file path to save the video. Default: <skill-dir>/outputs/video-{timestamp}.mp4",
           },
         },
         required: ["prompt"],
