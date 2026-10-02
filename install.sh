@@ -27,12 +27,22 @@ CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 CLAUDE_HOME="$HOME/.claude"
 
 # Claude Desktop config path (macOS / Windows / Linux)
+# Both standard and 3p (third-party deployment) variants
 if [ "$(uname)" = "Darwin" ]; then
-  CLAUDE_DESKTOP_CONFIG="$HOME/Library/Application Support/Claude/claude_desktop_config.json"
+  CLAUDE_DESKTOP_CONFIGS=(
+    "$HOME/Library/Application Support/Claude-3p/claude_desktop_config.json"
+    "$HOME/Library/Application Support/Claude/claude_desktop_config.json"
+  )
 elif [ -n "${APPDATA:-}" ]; then
-  CLAUDE_DESKTOP_CONFIG="$APPDATA/Claude/claude_desktop_config.json"
+  CLAUDE_DESKTOP_CONFIGS=(
+    "$APPDATA/Claude-3p/claude_desktop_config.json"
+    "$APPDATA/Claude/claude_desktop_config.json"
+  )
 else
-  CLAUDE_DESKTOP_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/Claude/claude_desktop_config.json"
+  CLAUDE_DESKTOP_CONFIGS=(
+    "${XDG_CONFIG_HOME:-$HOME/.config}/Claude-3p/claude_desktop_config.json"
+    "${XDG_CONFIG_HOME:-$HOME/.config}/Claude/claude_desktop_config.json"
+  )
 fi
 
 # ── Platform detection ───────────────────────────────────────
@@ -51,11 +61,17 @@ detect_platforms() {
     HAS_CLAUDE_CODE=true
   fi
 
-  # Claude Desktop: check for config directory or app
-  if [ -d "$(dirname "$CLAUDE_DESKTOP_CONFIG")" ] || \
-     [ -d "/Applications/Claude.app" ] || \
+  # Claude Desktop: check for config directory or app (both standard and 3p)
+  if [ -d "/Applications/Claude.app" ] || \
      [ -d "$HOME/Applications/Claude.app" ]; then
     HAS_CLAUDE_DESKTOP=true
+  else
+    for cfg in "${CLAUDE_DESKTOP_CONFIGS[@]}"; do
+      if [ -d "$(dirname "$cfg")" ]; then
+        HAS_CLAUDE_DESKTOP=true
+        break
+      fi
+    done
   fi
 }
 
@@ -266,11 +282,18 @@ configure_claude_desktop() {
 
   local INDEX_PATH="$MCP_SERVER_DIR/index.mjs"
 
-  # Create or update claude_desktop_config.json
-  mkdir -p "$(dirname "$CLAUDE_DESKTOP_CONFIG")"
+  # Create or update all detected Claude Desktop config files
+  local registered=0
+  for CLAUDE_DESKTOP_CONFIG in "${CLAUDE_DESKTOP_CONFIGS[@]}"; do
+    # Only write to configs whose parent directory exists (= that variant is installed)
+    if [ ! -d "$(dirname "$CLAUDE_DESKTOP_CONFIG")" ]; then
+      continue
+    fi
 
-  if [ -f "$CLAUDE_DESKTOP_CONFIG" ]; then
-    python3 -c "
+    mkdir -p "$(dirname "$CLAUDE_DESKTOP_CONFIG")"
+
+    if [ -f "$CLAUDE_DESKTOP_CONFIG" ]; then
+      python3 -c "
 import json, sys
 with open(sys.argv[1]) as f:
     data = json.load(f)
@@ -287,8 +310,8 @@ with open(sys.argv[1], 'w') as f:
     json.dump(data, f, indent=2)
     f.write('\\n')
 " "$CLAUDE_DESKTOP_CONFIG" "$NODE_PATH" "$INDEX_PATH" "$API_KEY" "$CUMOB_BASE_URL"
-  else
-    python3 -c "
+    else
+      python3 -c "
 import json, sys
 data = {
     'mcpServers': {
@@ -306,10 +329,21 @@ with open(sys.argv[5], 'w') as f:
     json.dump(data, f, indent=2)
     f.write('\\n')
 " "$NODE_PATH" "$INDEX_PATH" "$API_KEY" "$CUMOB_BASE_URL" "$CLAUDE_DESKTOP_CONFIG"
+    fi
+
+    local label="Claude Desktop"
+    if [[ "$CLAUDE_DESKTOP_CONFIG" == *"Claude-3p"* ]]; then
+      label="Claude Desktop (3p)"
+    fi
+    ok "$label 配置已更新: $CLAUDE_DESKTOP_CONFIG"
+    registered=$((registered + 1))
+  done
+
+  if [ "$registered" -eq 0 ]; then
+    warn "未找到任何 Claude Desktop 配置目录，跳过配置写入"
   fi
 
   ok "Claude Desktop MCP Server 配置完成"
-  info "MCP Server 路径: $INDEX_PATH"
 }
 
 # ── Install skill into Codex ─────────────────────────────────
@@ -417,18 +451,21 @@ verify_installation() {
   fi
 
   if [ "$target" = "claude-desktop" ]; then
-    if [ -f "$CLAUDE_DESKTOP_CONFIG" ]; then
-      if python3 -c "
+    local found_config=false
+    for CLAUDE_DESKTOP_CONFIG in "${CLAUDE_DESKTOP_CONFIGS[@]}"; do
+      if [ -f "$CLAUDE_DESKTOP_CONFIG" ]; then
+        if python3 -c "
 import json, sys
 data = json.load(open(sys.argv[1]))
 assert 'cumob-media' in data.get('mcpServers', {})
 " "$CLAUDE_DESKTOP_CONFIG" 2>/dev/null; then
-        ok "Claude Desktop config ✓"
-      else
-        err "Claude Desktop config 缺少 cumob-media MCP Server ✗"; success=false
+          ok "Claude Desktop config ✓ ($CLAUDE_DESKTOP_CONFIG)"
+          found_config=true
+        fi
       fi
-    else
-      err "Claude Desktop config 不存在 ✗"; success=false
+    done
+    if ! $found_config; then
+      err "Claude Desktop config 缺少 cumob-media MCP Server ✗"; success=false
     fi
     if [ -d "$MCP_SERVER_DIR/node_modules/@modelcontextprotocol" ]; then
       ok "MCP Server 依赖 ✓"
@@ -542,8 +579,11 @@ uninstall() {
   fi
 
   # Claude Desktop MCP Server
-  if [ -f "$CLAUDE_DESKTOP_CONFIG" ]; then
-    if python3 -c "
+  if [ -f "$CLAUDE_DESKTOP_CONFIG" ] || true; then
+    local removed=false
+    for CLAUDE_DESKTOP_CONFIG in "${CLAUDE_DESKTOP_CONFIGS[@]}"; do
+      if [ -f "$CLAUDE_DESKTOP_CONFIG" ]; then
+        if python3 -c "
 import json, sys
 with open(sys.argv[1]) as f:
     data = json.load(f)
@@ -554,7 +594,13 @@ if 'cumob-media' in data.get('mcpServers', {}):
         f.write('\\n')
     print('removed')
 " "$CLAUDE_DESKTOP_CONFIG" 2>/dev/null | grep -q 'removed'; then
-      ok "已从 Claude Desktop 配置中移除 cumob-media MCP Server"
+          ok "已从 $CLAUDE_DESKTOP_CONFIG 中移除 cumob-media MCP Server"
+          removed=true
+        fi
+      fi
+    done
+    if ! $removed; then
+      info "未找到已注册的 Claude Desktop MCP Server"
     fi
   fi
 
