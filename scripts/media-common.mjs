@@ -85,6 +85,26 @@ function readJson(file) {
   }
 }
 
+export function detectPlatform() {
+  const codexHome = path.join(os.homedir(), ".codex");
+  const claudeHome = path.join(os.homedir(), ".claude");
+  const hasCodex = fs.existsSync(path.join(codexHome, "config.toml"));
+  const hasClaude = fs.existsSync(claudeHome);
+  if (hasCodex) return "codex";
+  if (hasClaude) return "claude-code";
+  return "unknown";
+}
+
+function readClaudeCodeConfig() {
+  const claudeHome = path.join(os.homedir(), ".claude");
+  const settingsPath = path.join(claudeHome, "settings.json");
+  const localSettingsPath = path.join(claudeHome, "settings.local.json");
+  const settings = readJson(settingsPath);
+  const localSettings = readJson(localSettingsPath);
+  const envOverrides = { ...settings.env, ...localSettings.env };
+  return envOverrides;
+}
+
 function env(name) {
   if (process.env[name] !== undefined) return process.env[name];
   const wanted = name.toLowerCase();
@@ -92,23 +112,56 @@ function env(name) {
 }
 
 export function resolveConfig(args, kind) {
+  // --- Layer 1: Codex config (TOML + auth.json) ---
   const codexHome = path.resolve(args["codex-home"] || env("CODEX_HOME") || path.join(os.homedir(), ".codex"));
   const configPath = path.join(codexHome, "config.toml");
   const authPath = path.join(codexHome, "auth.json");
   const config = fs.existsSync(configPath) ? parseToml(fs.readFileSync(configPath, "utf8")) : { root: {}, sections: {} };
   const providerName = config.root.model_provider || "OpenAI";
   const provider = config.sections[`model_providers.${providerName}`] || {};
+  const auth = readJson(authPath);
+
+  // --- Layer 2: Claude Code config (settings.json env overrides) ---
+  const claudeEnv = args["codex-home"] ? {} : readClaudeCodeConfig();
+
+  // --- API key resolution ---
+  // Priority: CLI --api-key-env > CUMOB_API_KEY > Codex auth.json > Claude Code settings env >
+  //           OPENAI_API_KEY > ANTHROPIC_API_KEY
   const keyEnv = args["api-key-env"] || "OPENAI_API_KEY";
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(keyEnv)) die("--api-key-env must be an environment variable name");
-  const auth = readJson(authPath);
-  const apiKey = auth.OPENAI_API_KEY || env(keyEnv);
-  if (!apiKey && !args["dry-run"]) die(`no API key found in ${authPath} or ${keyEnv}`);
+  const apiKey = env("CUMOB_API_KEY")
+    || auth.OPENAI_API_KEY
+    || claudeEnv.CUMOB_API_KEY || claudeEnv.OPENAI_API_KEY
+    || env(keyEnv)
+    || env("ANTHROPIC_API_KEY");
+  if (!apiKey && !args["dry-run"]) die(`no API key found (checked CUMOB_API_KEY, ${authPath}, Claude Code settings, ${keyEnv}, ANTHROPIC_API_KEY)`);
+
+  // --- Base URL resolution ---
+  // Priority: CLI --base-url > CUMOB_BASE_URL > Codex provider base_url > Claude Code settings env >
+  //           OPENAI_BASE_URL > default
   const defaultBase = "https://api.cumob.com/v1";
-  const baseUrl = String(args["base-url"] || provider.base_url || env("OPENAI_BASE_URL") || defaultBase).replace(/\/+$/, "");
+  const baseUrl = String(
+    args["base-url"]
+    || env("CUMOB_BASE_URL")
+    || provider.base_url
+    || claudeEnv.CUMOB_BASE_URL || claudeEnv.OPENAI_BASE_URL
+    || env("OPENAI_BASE_URL")
+    || defaultBase
+  ).replace(/\/+$/, "");
+
+  // --- Model resolution ---
+  // Priority: CLI --image-model/--video-model > CUMOB_IMAGE_MODEL/CUMOB_VIDEO_MODEL >
+  //           Codex provider config > Claude Code settings env > OPENAI_IMAGE_MODEL/OPENAI_VIDEO_MODEL > default
   const modelKey = kind === "image" ? "image_model" : "video_model";
-  const envKey = kind === "image" ? "OPENAI_IMAGE_MODEL" : "OPENAI_VIDEO_MODEL";
+  const cumobModelEnv = kind === "image" ? "CUMOB_IMAGE_MODEL" : "CUMOB_VIDEO_MODEL";
+  const openaiModelEnv = kind === "image" ? "OPENAI_IMAGE_MODEL" : "OPENAI_VIDEO_MODEL";
   const fallbackModel = kind === "image" ? "gpt-image-2.5" : "minimax-h3";
-  const model = args[`${kind}-model`] || provider[modelKey] || env(envKey) || fallbackModel;
+  const model = args[`${kind}-model`]
+    || env(cumobModelEnv)
+    || provider[modelKey]
+    || claudeEnv[cumobModelEnv] || claudeEnv[openaiModelEnv]
+    || env(openaiModelEnv)
+    || fallbackModel;
   return { baseUrl, model, apiKey, hasApiKey: Boolean(apiKey) };
 }
 

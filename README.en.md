@@ -1,6 +1,6 @@
 # CUMOB Media Generation Skill
 
-A minimal Codex Skill for image and video generation.
+A minimal Skill for image and video generation, supporting both OpenAI Codex and Claude Code.
 
 ## Features
 
@@ -51,9 +51,9 @@ node scripts/generate-video.mjs \
   --out outputs/cat.mp4
 ```
 
-CUMOB exposes multiple image models (for example `gemini-3-pro-image-preview`, `gemini-3.1-flash-image-preview`, `gpt-image-2.5`). When prompting Codex, simply say "use the gemini-3.1-flash-image-preview model to generate ..." and the agent will pass the matching `--image-model` flag.
+CUMOB exposes multiple image models (for example `gemini-3-pro-image-preview`, `gemini-3.1-flash-image-preview`, `gpt-image-2.5`). Simply say "use the gemini-3.1-flash-image-preview model to generate ..." and the AI agent will pass the matching `--image-model` flag.
 
-Model resolution precedence: command-line `--image-model` / `--video-model` > `image_model` / `video_model` in the active Codex provider config > `OPENAI_IMAGE_MODEL` / `OPENAI_VIDEO_MODEL` environment variables > built-in defaults (`gpt-image-2.5` for images, `minimax-h3` for videos). To pin a model long-term, set `image_model` or `video_model` in the active provider config.
+Model resolution precedence: command-line `--image-model` / `--video-model` > `CUMOB_IMAGE_MODEL` / `CUMOB_VIDEO_MODEL` environment variables > `image_model` / `video_model` in the active Codex provider config > Claude Code `settings.json` environment overrides > `OPENAI_IMAGE_MODEL` / `OPENAI_VIDEO_MODEL` environment variables > built-in defaults (`gpt-image-2.5` for images, `minimax-h3` for videos). To pin a model long-term, set `CUMOB_IMAGE_MODEL` / `CUMOB_VIDEO_MODEL` environment variables or configure in your platform's settings.
 
 Video model capabilities (durations, aspect ratios, resolutions, reference limits) are declared in `video-models.json`; the script validates and clamps to that registry, and rejects unsupported values with an explicit error.
 
@@ -108,7 +108,7 @@ node scripts/generate-video.mjs \
   --out outputs/video.mp4
 ```
 
-The scripts read `base_url`, `image_model`, `video_model`, and `OPENAI_API_KEY` from the active Codex provider configuration. Node.js 18+ is the only runtime dependency.
+The scripts read configuration from multiple sources in priority order: `CUMOB_*` environment variables > Codex provider config (`base_url`, `image_model`, `video_model`, `auth.json`) > Claude Code `settings.json` environment overrides > `OPENAI_*` environment variables > built-in defaults. Node.js 18+ is the only runtime dependency.
 
 ```bash
 node scripts/generate-image.mjs --help

@@ -1,6 +1,6 @@
 # CUMOB Media Generation Skill
 
-一个只负责图片和视频生成的精简 Codex Skill。
+一个只负责图片和视频生成的精简 Skill，同时支持 OpenAI Codex 和 Claude Code。
 
 ## 功能
 
@@ -51,9 +51,9 @@ node scripts/generate-video.mjs \
   --out outputs/cat.mp4
 ```
 
-CUMOB 支持多个图片模型（例如 `gemini-3-pro-image-preview`、`gemini-3.1-flash-image-preview`、`gpt-image-2.5`）；在 Codex 对话中直接说"用 gemini-3.1-flash-image-preview 模型生成一张……"即可，Codex 会抛出对应的 `--image-model` 参数。
+CUMOB 支持多个图片模型（例如 `gemini-3-pro-image-preview`、`gemini-3.1-flash-image-preview`、`gpt-image-2.5`）；在对话中直接说“用 gemini-3.1-flash-image-preview 模型生成一张……”即可，AI 助手会传入对应的 `--image-model` 参数。
 
-模型的选取优先级为：命令行 `--image-model` / `--video-model` > 当前 Codex provider 配置里的 `image_model` / `video_model` > 环境变量 `OPENAI_IMAGE_MODEL` / `OPENAI_VIDEO_MODEL` > 内置默认值（图片 `gpt-image-2.5`，视频 `minimax-h3`）。如需长期固定模型，把 `image_model` 或 `video_model` 写到当前 provider 的 Codex 配置中即可，不必每次都加命令行参数。
+模型的选取优先级为：命令行 `--image-model` / `--video-model` > `CUMOB_IMAGE_MODEL` / `CUMOB_VIDEO_MODEL` 环境变量 > Codex provider 配置里的 `image_model` / `video_model` > Claude Code settings.json 中的环境变量 > `OPENAI_IMAGE_MODEL` / `OPENAI_VIDEO_MODEL` 环境变量 > 内置默认值（图片 `gpt-image-2.5`，视频 `minimax-h3`）。如需长期固定模型，可设置环境变量 `CUMOB_IMAGE_MODEL` / `CUMOB_VIDEO_MODEL`，或在对应平台的配置文件中设置。
 
 视频模型的画幅、时长、分辨率与参考素材上限由仓库根目录的 `video-models.json` 决定，脚本会自动校验并夹紧到合法范围；不支持的取值会直接报错并退出。
 
@@ -108,7 +108,7 @@ node scripts/generate-video.mjs \
   --out outputs/video.mp4
 ```
 
-脚本默认读取 Codex 当前 provider 的 `base_url`、`image_model`、`video_model` 和 `auth.json` 中的 `OPENAI_API_KEY`。运行环境只需要 Node.js 18+，无需安装 npm 依赖。
+脚本默认从以下位置读取配置（按优先级）：`CUMOB_*` 环境变量 > Codex 当前 provider 的 `base_url`、`image_model`、`video_model` 和 `auth.json` 中的 `OPENAI_API_KEY` > Claude Code `settings.json` 中的环境变量 > `OPENAI_*` 环境变量 > 内置默认值。运行环境只需要 Node.js 18+，无需安装 npm 依赖。
 
 查看全部参数：
 

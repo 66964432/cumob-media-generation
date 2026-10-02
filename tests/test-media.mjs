@@ -20,8 +20,30 @@ fs.writeFileSync(path.join(temp, "config.toml"), [
 ].join("\n"));
 fs.writeFileSync(path.join(temp, "reference.png"), Buffer.from("local-reference"));
 
+// ── Claude Code style settings.json for testing ──
+const claudeTemp = fs.mkdtempSync(path.join(os.tmpdir(), "cumob-claude-test-"));
+const claudeHome = path.join(claudeTemp, ".claude");
+fs.mkdirSync(claudeHome, { recursive: true });
+fs.writeFileSync(path.join(claudeHome, "settings.json"), JSON.stringify({
+  env: {
+    CUMOB_API_KEY: "claude-test-key",
+    CUMOB_BASE_URL: "https://claude-example.test/v1",
+    CUMOB_IMAGE_MODEL: "claude-image-model",
+    CUMOB_VIDEO_MODEL: "claude-video-model",
+  }
+}, null, 2));
+
 function dryRun(script, args) {
   const result = spawnSync(process.execPath, [path.join(root, "scripts", script), "--codex-home", temp, "--dry-run", "--no-progress", ...args], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  return JSON.parse(result.stdout);
+}
+
+function dryRunWithEnv(script, args, env) {
+  const result = spawnSync(process.execPath, [path.join(root, "scripts", script), "--dry-run", "--no-progress", ...args], {
+    encoding: "utf8",
+    env: { ...process.env, ...env, HOME: claudeTemp },
+  });
   assert.equal(result.status, 0, result.stderr);
   return JSON.parse(result.stdout);
 }
@@ -103,7 +125,45 @@ try {
     assert.equal(actual, expected, `official vendor file changed: ${relative}`);
   }
 
+  // ── CUMOB_* environment variable priority tests ──
+  const cumobEnvImage = dryRunWithEnv("generate-image.mjs", [
+    "--prompt", "env-test", "--out", "env-test.png",
+  ], {
+    CUMOB_API_KEY: "cumob-key-from-env",
+    CUMOB_BASE_URL: "https://cumob-env.test/v1",
+    CUMOB_IMAGE_MODEL: "cumob-env-image-model",
+    CODEX_HOME: temp,
+  });
+  assert.equal(cumobEnvImage.endpoint, "https://cumob-env.test/v1/images/generations", "CUMOB_BASE_URL should override Codex config");
+  assert.equal(cumobEnvImage.model, "cumob-env-image-model", "CUMOB_IMAGE_MODEL should override Codex config");
+  assert.equal(cumobEnvImage.has_api_key, true, "CUMOB_API_KEY should provide API key");
+
+  const cumobEnvVideo = dryRunWithEnv("generate-video.mjs", [
+    "--prompt", "env-test", "--out", "env-test.mp4",
+  ], {
+    CUMOB_API_KEY: "cumob-key-from-env",
+    CUMOB_BASE_URL: "https://cumob-env.test/v1",
+    CUMOB_VIDEO_MODEL: "minimax-h3",
+    CODEX_HOME: temp,
+  });
+  assert.equal(cumobEnvVideo.endpoint, "https://cumob-env.test/v1/videos", "CUMOB_BASE_URL should override Codex config for video");
+  assert.equal(cumobEnvVideo.request.model, "minimax-h3", "CUMOB_VIDEO_MODEL should be used");
+
+  // ── Claude Code settings.json fallback test ──
+  // When no --codex-home and no CODEX_HOME, and HOME points to claudeTemp,
+  // the script should fall back to reading Claude Code settings.json
+  const claudeImage = dryRunWithEnv("generate-image.mjs", [
+    "--prompt", "claude-test", "--out", "claude-test.png",
+  ], {
+    // No CUMOB_* env, no CODEX_HOME, no OPENAI_* — force Claude Code fallback
+    HOME: claudeTemp,
+  });
+  assert.equal(claudeImage.endpoint, "https://claude-example.test/v1/images/generations", "Should read base URL from Claude Code settings.json");
+  assert.equal(claudeImage.model, "claude-image-model", "Should read image model from Claude Code settings.json");
+  assert.equal(claudeImage.has_api_key, true, "Should read API key from Claude Code settings.json");
+
   console.log("media tests passed");
 } finally {
   fs.rmSync(temp, { recursive: true, force: true });
+  fs.rmSync(claudeTemp, { recursive: true, force: true });
 }
