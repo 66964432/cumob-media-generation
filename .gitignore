@@ -16,3 +16,8 @@ generated.jpeg
 generated.webp
 
 *.log
+
+# MCP Server dependencies
+mcp-server/node_modules/
+mcp-server/package-lock.json
+_installer-patch/

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────
 # CUMOB One-Click Installer
-# Configures OpenAI Codex or Claude Code to use the CUMOB API
-# gateway and installs the cumob-media-generation skill.
+# Configures OpenAI Codex, Claude Code, and/or Claude Desktop
+# to use the CUMOB API gateway and installs cumob-media-generation.
 # ─────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -19,25 +19,43 @@ die()   { err "$*"; exit 1; }
 # ── Locate this script (= skill root) ───────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SKILL_DIR="$SCRIPT_DIR"
+MCP_SERVER_DIR="$SKILL_DIR/mcp-server"
 
 # ── Constants ────────────────────────────────────────────────
 CUMOB_BASE_URL="https://api.cumob.com/v1"
 CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 CLAUDE_HOME="$HOME/.claude"
 
+# Claude Desktop config path (macOS / Windows / Linux)
+if [ "$(uname)" = "Darwin" ]; then
+  CLAUDE_DESKTOP_CONFIG="$HOME/Library/Application Support/Claude/claude_desktop_config.json"
+elif [ -n "${APPDATA:-}" ]; then
+  CLAUDE_DESKTOP_CONFIG="$APPDATA/Claude/claude_desktop_config.json"
+else
+  CLAUDE_DESKTOP_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/Claude/claude_desktop_config.json"
+fi
+
 # ── Platform detection ───────────────────────────────────────
 detect_platforms() {
   HAS_CODEX=false
-  HAS_CLAUDE=false
+  HAS_CLAUDE_CODE=false
+  HAS_CLAUDE_DESKTOP=false
 
   # Codex: check for CLI or config directory
   if command -v codex &>/dev/null || [ -d "$CODEX_HOME" ]; then
     HAS_CODEX=true
   fi
 
-  # Claude Code: check for CLI or config directory
+  # Claude Code: check for CLI
   if command -v claude &>/dev/null || [ -d "$CLAUDE_HOME" ]; then
-    HAS_CLAUDE=true
+    HAS_CLAUDE_CODE=true
+  fi
+
+  # Claude Desktop: check for config directory or app
+  if [ -d "$(dirname "$CLAUDE_DESKTOP_CONFIG")" ] || \
+     [ -d "/Applications/Claude.app" ] || \
+     [ -d "$HOME/Applications/Claude.app" ]; then
+    HAS_CLAUDE_DESKTOP=true
   fi
 }
 
@@ -46,56 +64,51 @@ select_platform() {
   detect_platforms
 
   echo ""
-  printf "${BOLD}╔══════════════════════════════════════════════╗${NC}\n"
-  printf "${BOLD}║       CUMOB One-Click Installer  v1.0        ║${NC}\n"
-  printf "${BOLD}╚══════════════════════════════════════════════╝${NC}\n"
+  printf "${BOLD}╔══════════════════════════════════════════════════════╗${NC}\n"
+  printf "${BOLD}║         CUMOB One-Click Installer  v1.1              ║${NC}\n"
+  printf "${BOLD}╚══════════════════════════════════════════════════════╝${NC}\n"
   echo ""
 
   # Show detected platforms
   if $HAS_CODEX; then
-    ok "检测到 OpenAI Codex  (Detected OpenAI Codex)"
+    ok "检测到 OpenAI Codex     (Detected OpenAI Codex)"
   else
-    warn "未检测到 OpenAI Codex  (OpenAI Codex not detected)"
+    warn "未检测到 OpenAI Codex     (OpenAI Codex not detected)"
   fi
 
-  if $HAS_CLAUDE; then
-    ok "检测到 Claude Code   (Detected Claude Code)"
+  if $HAS_CLAUDE_CODE; then
+    ok "检测到 Claude Code      (Detected Claude Code)"
   else
-    warn "未检测到 Claude Code   (Claude Code not detected)"
+    warn "未检测到 Claude Code      (Claude Code not detected)"
+  fi
+
+  if $HAS_CLAUDE_DESKTOP; then
+    ok "检测到 Claude Desktop   (Detected Claude Desktop)"
+  else
+    warn "未检测到 Claude Desktop   (Claude Desktop not detected)"
   fi
 
   echo ""
-
-  # If neither detected, let user choose anyway
-  if ! $HAS_CODEX && ! $HAS_CLAUDE; then
-    warn "未检测到任何已安装的平台，但你仍可选择要配置的目标平台。"
-    warn "No installed platform detected, but you can still choose a target."
-    echo ""
-  fi
 
   printf "${BOLD}请选择安装目标 / Select installation target:${NC}\n"
   echo ""
-  echo "  1) OpenAI Codex"
-  echo "  2) Claude Code"
-  if $HAS_CODEX && $HAS_CLAUDE; then
-    echo "  3) 两者都安装 / Install for both"
-  fi
+  echo "  1) OpenAI Codex           — Skill 脚本模式"
+  echo "  2) Claude Code (CLI)      — Skill 脚本模式"
+  echo "  3) Claude Desktop (App)   — MCP Server 模式"
+  echo "  4) Claude Code + Desktop  — 同时安装"
+  echo "  5) 全部安装 / Install all"
   echo "  q) 退出 / Quit"
   echo ""
 
   while true; do
-    printf "${CYAN}请输入选项 / Enter choice [1/2${HAS_CODEX:+${HAS_CLAUDE:+/3}}/q]: ${NC}"
+    printf "${CYAN}请输入选项 / Enter choice [1-5/q]: ${NC}"
     read -r choice
     case "$choice" in
-      1) TARGETS=(codex);       break ;;
-      2) TARGETS=(claude-code); break ;;
-      3)
-        if $HAS_CODEX && $HAS_CLAUDE; then
-          TARGETS=(codex claude-code); break
-        else
-          err "该选项仅在两个平台都检测到时可用 / Option 3 requires both platforms detected"
-        fi
-        ;;
+      1) TARGETS=(codex);                          break ;;
+      2) TARGETS=(claude-code);                    break ;;
+      3) TARGETS=(claude-desktop);                 break ;;
+      4) TARGETS=(claude-code claude-desktop);     break ;;
+      5) TARGETS=(codex claude-code claude-desktop); break ;;
       q|Q) info "已取消 / Cancelled."; exit 0 ;;
       *)  err "无效选项，请重新输入 / Invalid choice, try again." ;;
     esac
@@ -146,13 +159,10 @@ configure_codex() {
 
   # ── config.toml ──
   local CONFIG_FILE="$CODEX_HOME/config.toml"
-  local PROVIDER_NAME="cumob"
 
   if [ -f "$CONFIG_FILE" ]; then
-    # Check if cumob provider already exists
     if grep -q "\[model_providers\.cumob\]" "$CONFIG_FILE" 2>/dev/null; then
       info "Codex config.toml 中已有 cumob provider，正在更新 …"
-      # Update base_url in existing section
       sed -i.bak "s|^base_url = .*# cumob|base_url = \"$CUMOB_BASE_URL\" # cumob|" "$CONFIG_FILE" 2>/dev/null || true
     else
       info "向 Codex config.toml 添加 cumob provider …"
@@ -174,7 +184,6 @@ base_url = "$CUMOB_BASE_URL" # cumob
 EOF
   fi
 
-  # Ensure model_provider points to cumob
   if grep -q '^model_provider' "$CONFIG_FILE"; then
     sed -i.bak 's/^model_provider = .*/model_provider = "cumob"/' "$CONFIG_FILE"
   fi
@@ -183,7 +192,6 @@ EOF
   # ── auth.json ──
   local AUTH_FILE="$CODEX_HOME/auth.json"
   if [ -f "$AUTH_FILE" ]; then
-    # Update existing auth.json preserving other keys
     python3 -c "
 import json, sys
 with open(sys.argv[1]) as f:
@@ -207,11 +215,9 @@ configure_claude_code() {
 
   mkdir -p "$CLAUDE_HOME"
 
-  # ── settings.json ──
   local SETTINGS_FILE="$CLAUDE_HOME/settings.json"
 
   if [ -f "$SETTINGS_FILE" ]; then
-    # Merge env keys into existing settings.json
     python3 -c "
 import json, sys
 with open(sys.argv[1]) as f:
@@ -241,12 +247,75 @@ EOF
   ok "Claude Code 配置完成  (Claude Code configured)"
 }
 
+# ── Configure Claude Desktop (MCP Server) ────────────────────
+configure_claude_desktop() {
+  info "正在配置 Claude Desktop MCP Server …  (Configuring Claude Desktop MCP Server …)"
+
+  # Install npm dependencies for MCP server
+  if [ ! -d "$MCP_SERVER_DIR/node_modules/@modelcontextprotocol" ]; then
+    info "安装 MCP Server 依赖 …  (Installing MCP Server dependencies …)"
+    (cd "$MCP_SERVER_DIR" && npm install --no-fund --no-audit 2>&1 | tail -1) || die "npm install 失败"
+    ok "MCP Server 依赖安装完成"
+  else
+    ok "MCP Server 依赖已安装"
+  fi
+
+  # Find node path
+  local NODE_PATH
+  NODE_PATH="$(which node 2>/dev/null || echo '/usr/local/bin/node')"
+
+  local INDEX_PATH="$MCP_SERVER_DIR/index.mjs"
+
+  # Create or update claude_desktop_config.json
+  mkdir -p "$(dirname "$CLAUDE_DESKTOP_CONFIG")"
+
+  if [ -f "$CLAUDE_DESKTOP_CONFIG" ]; then
+    python3 -c "
+import json, sys
+with open(sys.argv[1]) as f:
+    data = json.load(f)
+servers = data.setdefault('mcpServers', {})
+servers['cumob-media'] = {
+    'command': sys.argv[2],
+    'args': [sys.argv[3]],
+    'env': {
+        'CUMOB_API_KEY': sys.argv[4],
+        'CUMOB_BASE_URL': sys.argv[5]
+    }
+}
+with open(sys.argv[1], 'w') as f:
+    json.dump(data, f, indent=2)
+    f.write('\\n')
+" "$CLAUDE_DESKTOP_CONFIG" "$NODE_PATH" "$INDEX_PATH" "$API_KEY" "$CUMOB_BASE_URL"
+  else
+    python3 -c "
+import json, sys
+data = {
+    'mcpServers': {
+        'cumob-media': {
+            'command': sys.argv[1],
+            'args': [sys.argv[2]],
+            'env': {
+                'CUMOB_API_KEY': sys.argv[3],
+                'CUMOB_BASE_URL': sys.argv[4]
+            }
+        }
+    }
+}
+with open(sys.argv[5], 'w') as f:
+    json.dump(data, f, indent=2)
+    f.write('\\n')
+" "$NODE_PATH" "$INDEX_PATH" "$API_KEY" "$CUMOB_BASE_URL" "$CLAUDE_DESKTOP_CONFIG"
+  fi
+
+  ok "Claude Desktop MCP Server 配置完成"
+  info "MCP Server 路径: $INDEX_PATH"
+}
+
 # ── Install skill into Codex ─────────────────────────────────
 install_skill_codex() {
   info "正在将 cumob-media-generation Skill 安装到 Codex …"
 
-  # Codex skills are typically in ~/.codex/skills/ or a project directory.
-  # We symlink for easy updates.
   local SKILL_TARGET="$CODEX_HOME/skills/cumob-media-generation"
   mkdir -p "$CODEX_HOME/skills"
 
@@ -265,7 +334,6 @@ install_skill_codex() {
 install_skill_claude_code() {
   info "正在将 cumob-media-generation Skill 安装到 Claude Code …"
 
-  # Method 1: Try `claude plugin install` if CLI is available
   if command -v claude &>/dev/null; then
     info "检测到 claude CLI，尝试使用 claude plugin install …"
     if claude plugin install "$SKILL_DIR" 2>/dev/null; then
@@ -276,7 +344,6 @@ install_skill_claude_code() {
     fi
   fi
 
-  # Method 2: Manual symlink into ~/.claude/skills/
   local SKILL_TARGET="$CLAUDE_HOME/skills/cumob-media-generation"
   mkdir -p "$CLAUDE_HOME/skills"
 
@@ -290,7 +357,6 @@ install_skill_claude_code() {
   ln -s "$SKILL_DIR" "$SKILL_TARGET"
   ok "Skill 已链接到 $SKILL_TARGET"
 
-  # Method 3: Also install as a global custom command for discoverability
   local CMD_DIR="$CLAUDE_HOME/commands"
   mkdir -p "$CMD_DIR"
   cat > "$CMD_DIR/cumob-media.md" << 'CMDEOF'
@@ -320,19 +386,16 @@ verify_installation() {
   info "正在验证 $target 安装 …  (Verifying $target installation …)"
 
   if [ "$target" = "codex" ]; then
-    # Check config.toml
     if [ -f "$CODEX_HOME/config.toml" ] && grep -q 'cumob' "$CODEX_HOME/config.toml"; then
       ok "Codex config.toml ✓"
     else
       err "Codex config.toml ✗"; success=false
     fi
-    # Check auth.json
     if [ -f "$CODEX_HOME/auth.json" ]; then
       ok "Codex auth.json ✓"
     else
       err "Codex auth.json ✗"; success=false
     fi
-    # Check skill
     if [ -d "$CODEX_HOME/skills/cumob-media-generation" ]; then
       ok "Codex Skill 目录 ✓"
     else
@@ -341,13 +404,11 @@ verify_installation() {
   fi
 
   if [ "$target" = "claude-code" ]; then
-    # Check settings.json
     if [ -f "$CLAUDE_HOME/settings.json" ]; then
       ok "Claude Code settings.json ✓"
     else
       err "Claude Code settings.json ✗"; success=false
     fi
-    # Check skill
     if [ -d "$CLAUDE_HOME/skills/cumob-media-generation" ]; then
       ok "Claude Code Skill 目录 ✓"
     else
@@ -355,8 +416,36 @@ verify_installation() {
     fi
   fi
 
-  # Dry-run test
-  if [ -f "$SKILL_DIR/scripts/generate-image.mjs" ]; then
+  if [ "$target" = "claude-desktop" ]; then
+    if [ -f "$CLAUDE_DESKTOP_CONFIG" ]; then
+      if python3 -c "
+import json, sys
+data = json.load(open(sys.argv[1]))
+assert 'cumob-media' in data.get('mcpServers', {})
+" "$CLAUDE_DESKTOP_CONFIG" 2>/dev/null; then
+        ok "Claude Desktop config ✓"
+      else
+        err "Claude Desktop config 缺少 cumob-media MCP Server ✗"; success=false
+      fi
+    else
+      err "Claude Desktop config 不存在 ✗"; success=false
+    fi
+    if [ -d "$MCP_SERVER_DIR/node_modules/@modelcontextprotocol" ]; then
+      ok "MCP Server 依赖 ✓"
+    else
+      err "MCP Server 依赖未安装 ✗"; success=false
+    fi
+    # Test MCP server can start
+    if echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}' | \
+       timeout 5 node "$MCP_SERVER_DIR/index.mjs" 2>/dev/null | grep -q 'cumob-media'; then
+      ok "MCP Server 启动测试 ✓"
+    else
+      warn "MCP Server 启动测试未通过"
+    fi
+  fi
+
+  # Dry-run test (for Codex and Claude Code)
+  if [ "$target" != "claude-desktop" ] && [ -f "$SKILL_DIR/scripts/generate-image.mjs" ]; then
     local dry_run_args=("--prompt" "installation-test" "--out" "/dev/null" "--dry-run" "--no-progress")
     if [ "$target" = "codex" ]; then
       dry_run_args+=("--codex-home" "$CODEX_HOME")
@@ -378,24 +467,34 @@ verify_installation() {
 # ── Summary ──────────────────────────────────────────────────
 print_summary() {
   echo ""
-  printf "${BOLD}╔══════════════════════════════════════════════╗${NC}\n"
-  printf "${BOLD}║            安装完成 / Install Complete        ║${NC}\n"
-  printf "${BOLD}╚══════════════════════════════════════════════╝${NC}\n"
+  printf "${BOLD}╔══════════════════════════════════════════════════════╗${NC}\n"
+  printf "${BOLD}║              安装完成 / Install Complete              ║${NC}\n"
+  printf "${BOLD}╚══════════════════════════════════════════════════════╝${NC}\n"
   echo ""
 
   for target in "${TARGETS[@]}"; do
     if [ "$target" = "codex" ]; then
-      echo "  📦 Codex:"
+      echo "  📦 OpenAI Codex (Skill 脚本模式):"
       echo "     配置: $CODEX_HOME/config.toml"
       echo "     认证: $CODEX_HOME/auth.json"
       echo "     Skill: $CODEX_HOME/skills/cumob-media-generation"
       echo ""
     fi
     if [ "$target" = "claude-code" ]; then
-      echo "  📦 Claude Code:"
+      echo "  📦 Claude Code (Skill 脚本模式):"
       echo "     配置: $CLAUDE_HOME/settings.json"
       echo "     Skill: $CLAUDE_HOME/skills/cumob-media-generation"
       echo "     命令: /cumob-media"
+      echo ""
+    fi
+    if [ "$target" = "claude-desktop" ]; then
+      echo "  📦 Claude Desktop (MCP Server 模式):"
+      echo "     配置: $CLAUDE_DESKTOP_CONFIG"
+      echo "     MCP Server: $MCP_SERVER_DIR/index.mjs"
+      echo "     工具: generate_image, generate_video"
+      echo ""
+      printf "  ${YELLOW}⚠ 请重启 Claude Desktop 以加载 MCP Server${NC}\n"
+      printf "  ${YELLOW}⚠ Restart Claude Desktop to load the MCP Server${NC}\n"
       echo ""
     fi
   done
@@ -411,6 +510,10 @@ print_summary() {
   echo "  生视频 / Generate video:"
   echo "    \"生成一段 10 秒的猫在草地奔跑的视频\""
   echo ""
+  echo "  默认模型 / Default models:"
+  echo "    图片: gpt-image-2.5"
+  echo "    视频: minimax-h3"
+  echo ""
   info "所有请求将通过 CUMOB 网关 ($CUMOB_BASE_URL) 处理。"
   info "All requests will be routed through the CUMOB gateway."
   echo ""
@@ -425,22 +528,40 @@ uninstall() {
   # Codex
   if [ -L "$CODEX_HOME/skills/cumob-media-generation" ] || [ -d "$CODEX_HOME/skills/cumob-media-generation" ]; then
     rm -rf "$CODEX_HOME/skills/cumob-media-generation"
-    ok "已移除 Codex skill"
+    ok "已移除 Codex Skill"
   fi
 
   # Claude Code
   if [ -L "$CLAUDE_HOME/skills/cumob-media-generation" ] || [ -d "$CLAUDE_HOME/skills/cumob-media-generation" ]; then
     rm -rf "$CLAUDE_HOME/skills/cumob-media-generation"
-    ok "已移除 Claude Code skill"
+    ok "已移除 Claude Code Skill"
   fi
   if [ -f "$CLAUDE_HOME/commands/cumob-media.md" ]; then
     rm -f "$CLAUDE_HOME/commands/cumob-media.md"
     ok "已移除 Claude Code 命令 /cumob-media"
   fi
 
-  info "配置文件未移除，如需清理请手动编辑:"
-  echo "  Codex:       $CODEX_HOME/config.toml"
-  echo "  Claude Code: $CLAUDE_HOME/settings.json"
+  # Claude Desktop MCP Server
+  if [ -f "$CLAUDE_DESKTOP_CONFIG" ]; then
+    if python3 -c "
+import json, sys
+with open(sys.argv[1]) as f:
+    data = json.load(f)
+if 'cumob-media' in data.get('mcpServers', {}):
+    del data['mcpServers']['cumob-media']
+    with open(sys.argv[1], 'w') as f:
+        json.dump(data, f, indent=2)
+        f.write('\\n')
+    print('removed')
+" "$CLAUDE_DESKTOP_CONFIG" 2>/dev/null | grep -q 'removed'; then
+      ok "已从 Claude Desktop 配置中移除 cumob-media MCP Server"
+    fi
+  fi
+
+  info "配置文件未完全移除，如需清理请手动编辑:"
+  echo "  Codex:          $CODEX_HOME/config.toml"
+  echo "  Claude Code:    $CLAUDE_HOME/settings.json"
+  echo "  Claude Desktop: $CLAUDE_DESKTOP_CONFIG"
   echo ""
 }
 
@@ -487,6 +608,10 @@ main() {
       configure_claude_code
       install_skill_claude_code
       verify_installation claude-code
+    fi
+    if [ "$target" = "claude-desktop" ]; then
+      configure_claude_desktop
+      verify_installation claude-desktop
     fi
   done
 
